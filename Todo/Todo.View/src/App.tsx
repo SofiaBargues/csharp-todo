@@ -1,16 +1,18 @@
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import "./App.css";
 
 type TodoItem = {
   id: string;
   title: string;
   isCompleted: boolean;
+  section: string;
   createdAtUtc: string;
 };
 
 function App() {
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [title, setTitle] = useState("");
+  const [section, setSection] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,12 +47,15 @@ function App() {
     (todo: TodoItem) => !todo.isCompleted,
   ).length;
 
+  const canSubmit = Boolean(title.trim() && section.trim());
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const nextTitle = title.trim();
+    const nextSection = section.trim();
 
-    if (!nextTitle) {
+    if (!nextTitle || !nextSection) {
       return;
     }
 
@@ -63,7 +68,10 @@ function App() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ title: nextTitle }),
+        body: JSON.stringify({
+          title: nextTitle,
+          section: nextSection,
+        }),
       });
 
       if (!response.ok) {
@@ -74,6 +82,7 @@ function App() {
 
       setTodos((currentTodos: TodoItem[]) => [...currentTodos, createdTodo]);
       setTitle("");
+      setSection("");
     } catch {
       setError(
         "No se pudo guardar la tarea. Revisa que la API siga disponible.",
@@ -114,7 +123,7 @@ function App() {
           <label className="field-label" htmlFor="todo-title">
             Nueva tarea
           </label>
-          <div className="form-row">
+          <div className="form-grid">
             <input
               id="todo-title"
               name="title"
@@ -126,9 +135,26 @@ function App() {
               }
               disabled={isSubmitting}
             />
-            <button type="submit" disabled={isSubmitting || !title.trim()}>
+            <input
+              id="todo-section"
+              name="section"
+              type="text"
+              placeholder="Ej. Trabajo, Personal, Urgente"
+              value={section}
+              onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                setSection(event.target.value)
+              }
+              disabled={isSubmitting}
+            />
+            <label className="checkbox-row" htmlFor="todo-starred">
+              
+              Marcar como destacada
+            </label>
+            <div className="form-row">
+              <button type="submit" disabled={isSubmitting || !canSubmit}>
               {isSubmitting ? "Guardando..." : "Agregar"}
             </button>
+            </div>
           </div>
         </form>
 
@@ -140,10 +166,22 @@ function App() {
             {todos.map((todo: TodoItem) => (
               <li key={todo.id} className="todo-card">
                 <div>
-                  <p className="todo-title">{todo.title}</p>
+                  {(() => {
+                    const sectionLabel = todo.section.trim() || "Sin seccion";
+
+                    return (
+                      <>
+                  <div className="todo-heading">
+                    <p className="todo-title">{todo.title}</p>
+               
+                  </div>
                   <p className="todo-meta">
-                    Creada {new Date(todo.createdAtUtc).toLocaleString("es-AR")}
+                    Seccion {sectionLabel} · Creada{" "}
+                    {new Date(todo.createdAtUtc).toLocaleString("es-AR")}
                   </p>
+                      </>
+                    );
+                  })()}
                 </div>
                 <span
                   className={

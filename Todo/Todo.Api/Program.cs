@@ -73,10 +73,28 @@ app.MapGet("/api/todos", async (AppDbContext dbContext) =>
 
 app.MapPost("/api/todos", async (CreateTodoRequest request, AppDbContext dbContext) =>
 {
+    var title = request.Title?.Trim();
+    var section = request.Section?.Trim();
+
+    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section))
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            [nameof(request.Title)] = string.IsNullOrWhiteSpace(title)
+                ? ["El titulo es obligatorio."]
+                : [],
+            [nameof(request.Section)] = string.IsNullOrWhiteSpace(section)
+                ? ["La seccion es obligatoria."]
+                : []
+        }.Where(entry => entry.Value.Length > 0)
+         .ToDictionary(entry => entry.Key, entry => entry.Value));
+    }
+
     var todoItem = new TodoItem
     {
         Id = Guid.NewGuid(),
-        Title = request.Title.Trim()
+        Title = title,
+        Section = section
     };
 
     dbContext.TodoItems.Add(todoItem);
@@ -96,4 +114,4 @@ if (Directory.Exists(frontendDistPath))
 
 app.Run();
 
-public sealed record CreateTodoRequest(string Title);
+public sealed record CreateTodoRequest(string? Title, string? Section);

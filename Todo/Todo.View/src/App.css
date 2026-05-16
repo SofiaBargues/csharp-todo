@@ -102,11 +102,17 @@
   color: #6e5138;
 }
 
+.form-grid {
+  display: grid;
+  gap: 0.9rem;
+}
+
 .form-row {
   display: flex;
   gap: 0.9rem;
 }
 
+.form-grid input,
 .form-row input {
   flex: 1;
   min-width: 0;
@@ -118,9 +124,24 @@
   font: inherit;
 }
 
+.form-grid input:focus,
 .form-row input:focus {
   outline: 2px solid rgba(219, 119, 52, 0.28);
   border-color: #db7734;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: #6e5138;
+  font-weight: 600;
+}
+
+.checkbox-row input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: #cf5f2a;
 }
 
 .form-row button {
@@ -182,6 +203,26 @@
   color: #23160f;
   font-size: 1.05rem;
   font-weight: 700;
+}
+
+.todo-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.todo-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.28rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(207, 95, 42, 0.12);
+  color: #a04a1e;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .todo-meta {
