@@ -1,0 +1,29 @@
+# .NET build artifacts
+**/bin/
+**/obj/
+*.lscache
+
+# Local IDE files
+.vs/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/tasks.json
+*.suo
+*.user
+*.userosscache
+.idea/
+
+# Frontend dependencies and build output
+**/node_modules/
+**/dist/
+**/dist-ssr/
+
+# Local SQLite databases and backups
+*.db
+*.db-*
+*.db.bak-*
+
+# OS cruft
+.DS_Store
