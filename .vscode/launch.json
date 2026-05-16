@@ -1,29 +1,26 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Debug backend",
-            "type": "dotnet",
-            "request": "launch",
-            "projectPath": "${workspaceFolder}/Todo/Todo.Api/Todo.Api.csproj"
-        },
-        {
-            "name": "Debug frontend (Chrome)",
-            "type": "chrome",
-            "request": "launch",
-            "url": "http://localhost:5173",
-            "webRoot": "${workspaceFolder}/Todo/Todo.View/src",
-            "preLaunchTask": "Run frontend"
-        }
-    ],
-    "compounds": [
-        {
-            "name": "Debug full stack",
-            "configurations": [
-                "Debug backend",
-                "Debug frontend (Chrome)"
-            ],
-            "preLaunchTask": "Run full stack"
-        }
-    ]
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug backend",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/Todo/Todo.Api/Todo.Api.csproj"
+    },
+    {
+      "name": "Debug frontend (Chrome)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/Todo/Todo.View/src",
+      "preLaunchTask": "Run frontend"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Debug full stack",
+      "configurations": ["Debug backend", "Debug frontend (Chrome)"],
+      "preLaunchTask": "Run full stack"
+    }
+  ]
 }
