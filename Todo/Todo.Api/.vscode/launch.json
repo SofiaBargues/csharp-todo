@@ -1,0 +1,39 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Todo.Api",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build Todo.Api",
+      "program": "${workspaceFolder}/Todo/Todo.Api/bin/Debug/net8.0/Todo.Api.dll",
+      "cwd": "${workspaceFolder}/Todo/Todo.Api",
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ASPNETCORE_URLS": "http://localhost:5180"
+      },
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "\\bNow listening on:\\s+(https?://\\S+)"
+      }
+    },
+    {
+      "name": "Debug Todo.View",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev -- --host 0.0.0.0",
+      "cwd": "${workspaceFolder}/Todo/Todo.View",
+      "serverReadyAction": {
+        "pattern": "(https?://localhost:\\d+)",
+        "uriFormat": "%s",
+        "action": "debugWithChrome"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Debug Todo.Api + Todo.View",
+      "configurations": ["Debug Todo.Api", "Debug Todo.View"]
+    }
+  ]
+}
