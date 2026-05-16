@@ -23,6 +23,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .IsRequired();
             entity.Property(item => item.IsCompleted)
                 .HasDefaultValue(false);
+            entity.Property(item => item.DueDate);
             
             entity.Property(item => item.CreatedAtUtc)
                 .HasDefaultValueSql("GETUTCDATE()");        

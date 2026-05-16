@@ -77,15 +77,18 @@ app.MapPost("/api/todos", async (CreateTodoRequest request, AppDbContext dbConte
     var title = request.Title?.Trim();
     var section = request.Section?.Trim();
 
-    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section))
+    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section) || request.DueDate is null)
     {
         return Results.ValidationProblem(new Dictionary<string, string[]>
         {
             [nameof(request.Title)] = string.IsNullOrWhiteSpace(title)
-                ? ["El titulo es obligatorio."]
+                ? ["Title is required."]
                 : [],
             [nameof(request.Section)] = string.IsNullOrWhiteSpace(section)
-                ? ["La seccion es obligatoria."]
+                ? ["Section is required."]
+                : [],
+            [nameof(request.DueDate)] = request.DueDate is null
+                ? ["Due date is required."]
                 : []
         }.Where(entry => entry.Value.Length > 0)
          .ToDictionary(entry => entry.Key, entry => entry.Value));
@@ -95,7 +98,9 @@ app.MapPost("/api/todos", async (CreateTodoRequest request, AppDbContext dbConte
     {
         Id = Guid.NewGuid(),
         Title = title,
-        Section = section
+        Section = section,
+        DueDate = request.DueDate,
+        IsCompleted = request.IsCompleted
     };
 
     dbContext.TodoItems.Add(todoItem);
@@ -105,7 +110,7 @@ app.MapPost("/api/todos", async (CreateTodoRequest request, AppDbContext dbConte
 });
 
 // PUT: Update a TodoItem
-app.MapPut("/api/todos/{id:guid}", async (Guid id, CreateTodoRequest request, AppDbContext dbContext) =>
+app.MapPut("/api/todos/{id:guid}", async (Guid id, UpdateTodoRequest request, AppDbContext dbContext) =>
 {
     var todoItem = await dbContext.TodoItems.FindAsync(id);
     if (todoItem is null)
@@ -113,15 +118,18 @@ app.MapPut("/api/todos/{id:guid}", async (Guid id, CreateTodoRequest request, Ap
 
     var title = request.Title?.Trim();
     var section = request.Section?.Trim();
-    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section))
+    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section) || request.DueDate is null)
     {
         return Results.ValidationProblem(new Dictionary<string, string[]>
         {
             [nameof(request.Title)] = string.IsNullOrWhiteSpace(title)
-                ? ["El titulo es obligatorio."]
+                ? ["Title is required."]
                 : [],
             [nameof(request.Section)] = string.IsNullOrWhiteSpace(section)
-                ? ["La seccion es obligatoria."]
+                ? ["Section is required."]
+                : [],
+            [nameof(request.DueDate)] = request.DueDate is null
+                ? ["Due date is required."]
                 : []
         }.Where(entry => entry.Value.Length > 0)
          .ToDictionary(entry => entry.Key, entry => entry.Value));
@@ -129,7 +137,22 @@ app.MapPut("/api/todos/{id:guid}", async (Guid id, CreateTodoRequest request, Ap
 
     todoItem.Title = title;
     todoItem.Section = section;
+    todoItem.DueDate = request.DueDate;
+    todoItem.IsCompleted = request.IsCompleted;
     await dbContext.SaveChangesAsync();
+    return Results.Ok(todoItem);
+});
+
+// PATCH: Update only the TodoItem status
+app.MapPatch("/api/todos/{id:guid}/status", async (Guid id, UpdateTodoStatusRequest request, AppDbContext dbContext) =>
+{
+    var todoItem = await dbContext.TodoItems.FindAsync(id);
+    if (todoItem is null)
+        return Results.NotFound();
+
+    todoItem.IsCompleted = request.IsCompleted;
+    await dbContext.SaveChangesAsync();
+
     return Results.Ok(todoItem);
 });
 
@@ -156,4 +179,6 @@ if (Directory.Exists(frontendDistPath))
 
 app.Run();
 
-public sealed record CreateTodoRequest(string? Title, string? Section);
+public sealed record CreateTodoRequest(string? Title, string? Section, DateOnly? DueDate, bool IsCompleted);
+public sealed record UpdateTodoRequest(string? Title, string? Section, DateOnly? DueDate, bool IsCompleted);
+public sealed record UpdateTodoStatusRequest(bool IsCompleted);
