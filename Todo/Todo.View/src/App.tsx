@@ -147,13 +147,12 @@ function App() {
               disabled={isSubmitting}
             />
             <label className="checkbox-row" htmlFor="todo-starred">
-              
               Marcar como destacada
             </label>
             <div className="form-row">
               <button type="submit" disabled={isSubmitting || !canSubmit}>
-              {isSubmitting ? "Guardando..." : "Agregar"}
-            </button>
+                {isSubmitting ? "Guardando..." : "Agregar"}
+              </button>
             </div>
           </div>
         </form>
@@ -171,14 +170,13 @@ function App() {
 
                     return (
                       <>
-                  <div className="todo-heading">
-                    <p className="todo-title">{todo.title}</p>
-               
-                  </div>
-                  <p className="todo-meta">
-                    Seccion {sectionLabel} · Creada{" "}
-                    {new Date(todo.createdAtUtc).toLocaleString("es-AR")}
-                  </p>
+                        <div className="todo-heading">
+                          <p className="todo-title">{todo.title}</p>
+                        </div>
+                        <p className="todo-meta">
+                          Seccion {sectionLabel} · Creada{" "}
+                          {new Date(todo.createdAtUtc).toLocaleString("es-AR")}
+                        </p>
                       </>
                     );
                   })()}
