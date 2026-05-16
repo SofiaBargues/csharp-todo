@@ -71,6 +71,7 @@ app.MapGet("/api/todos", async (AppDbContext dbContext) =>
         .OrderBy(item => item.CreatedAtUtc)
         .ToListAsync());
 
+
 app.MapPost("/api/todos", async (CreateTodoRequest request, AppDbContext dbContext) =>
 {
     var title = request.Title?.Trim();
@@ -101,6 +102,47 @@ app.MapPost("/api/todos", async (CreateTodoRequest request, AppDbContext dbConte
     await dbContext.SaveChangesAsync();
 
     return Results.Created($"/api/todos/{todoItem.Id}", todoItem);
+});
+
+// PUT: Update a TodoItem
+app.MapPut("/api/todos/{id:guid}", async (Guid id, CreateTodoRequest request, AppDbContext dbContext) =>
+{
+    var todoItem = await dbContext.TodoItems.FindAsync(id);
+    if (todoItem is null)
+        return Results.NotFound();
+
+    var title = request.Title?.Trim();
+    var section = request.Section?.Trim();
+    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section))
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            [nameof(request.Title)] = string.IsNullOrWhiteSpace(title)
+                ? ["El titulo es obligatorio."]
+                : [],
+            [nameof(request.Section)] = string.IsNullOrWhiteSpace(section)
+                ? ["La seccion es obligatoria."]
+                : []
+        }.Where(entry => entry.Value.Length > 0)
+         .ToDictionary(entry => entry.Key, entry => entry.Value));
+    }
+
+    todoItem.Title = title;
+    todoItem.Section = section;
+    await dbContext.SaveChangesAsync();
+    return Results.Ok(todoItem);
+});
+
+// DELETE: Delete a TodoItem
+app.MapDelete("/api/todos/{id:guid}", async (Guid id, AppDbContext dbContext) =>
+{
+    var todoItem = await dbContext.TodoItems.FindAsync(id);
+    if (todoItem is null)
+        return Results.NotFound();
+
+    dbContext.TodoItems.Remove(todoItem);
+    await dbContext.SaveChangesAsync();
+    return Results.NoContent();
 });
 
 if (Directory.Exists(frontendDistPath))

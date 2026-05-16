@@ -1,5 +1,12 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
+
 import "./App.css";
+
+type EditState = {
+  id: string;
+  title: string;
+  section: string;
+} | null;
 
 type TodoItem = {
   id: string;
@@ -16,6 +23,85 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editState, setEditState] = useState<EditState>(null);
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("¿Seguro que quieres eliminar esta tarea?")) {
+      return;
+    }
+
+    try {
+      setError(null);
+
+      const response = await fetch(`/api/todos/${id}`, { method: "DELETE" });
+
+      if (!response.ok) {
+        throw new Error();
+      }
+
+      setTodos((currentTodos: TodoItem[]) =>
+        currentTodos.filter((todo: TodoItem) => todo.id !== id),
+      );
+    } catch {
+      setError("No se pudo eliminar la tarea.");
+    }
+  };
+
+  const startEdit = (todo: TodoItem) => {
+    setEditState({ id: todo.id, title: todo.title, section: todo.section });
+  };
+
+  const cancelEdit = () => {
+    setEditState(null);
+  };
+
+  const handleEditSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!editState) {
+      return;
+    }
+
+    const nextTitle = editState.title.trim();
+    const nextSection = editState.section.trim();
+
+    if (!nextTitle || !nextSection) {
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      setError(null);
+
+      const response = await fetch(`/api/todos/${editState.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: nextTitle,
+          section: nextSection,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error();
+      }
+
+      const updatedTodo = (await response.json()) as TodoItem;
+
+      setTodos((currentTodos: TodoItem[]) =>
+        currentTodos.map((todo: TodoItem) =>
+          todo.id === updatedTodo.id ? updatedTodo : todo,
+        ),
+      );
+      setEditState(null);
+    } catch {
+      setError("No se pudo actualizar la tarea.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     const loadTodos = async () => {
@@ -164,32 +250,88 @@ function App() {
           <ul className="todo-list">
             {todos.map((todo: TodoItem) => (
               <li key={todo.id} className="todo-card">
-                <div>
-                  {(() => {
-                    const sectionLabel = todo.section.trim() || "Sin seccion";
-
-                    return (
-                      <>
-                        <div className="todo-heading">
-                          <p className="todo-title">{todo.title}</p>
-                        </div>
-                        <p className="todo-meta">
-                          Seccion {sectionLabel} · Creada{" "}
-                          {new Date(todo.createdAtUtc).toLocaleString("es-AR")}
-                        </p>
-                      </>
-                    );
-                  })()}
-                </div>
-                <span
-                  className={
-                    todo.isCompleted
-                      ? "todo-status done"
-                      : "todo-status pending"
-                  }
-                >
-                  {todo.isCompleted ? "Hecha" : "Pendiente"}
-                </span>
+                {editState && editState.id === todo.id ? (
+                  <form className="edit-form" onSubmit={handleEditSubmit}>
+                    <input
+                      type="text"
+                      value={editState.title}
+                      onChange={(e) =>
+                        setEditState({ ...editState, title: e.target.value })
+                      }
+                      disabled={isSubmitting}
+                    />
+                    <input
+                      type="text"
+                      value={editState.section}
+                      onChange={(e) =>
+                        setEditState({ ...editState, section: e.target.value })
+                      }
+                      disabled={isSubmitting}
+                    />
+                    <button
+                      type="submit"
+                      disabled={
+                        isSubmitting ||
+                        !editState.title.trim() ||
+                        !editState.section.trim()
+                      }
+                    >
+                      Guardar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelEdit}
+                      disabled={isSubmitting}
+                    >
+                      Cancelar
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <div>
+                      {(() => {
+                        const sectionLabel =
+                          todo.section.trim() || "Sin seccion";
+                        return (
+                          <>
+                            <div className="todo-heading">
+                              <p className="todo-title">{todo.title}</p>
+                            </div>
+                            <p className="todo-meta">
+                              Seccion {sectionLabel} · Creada{" "}
+                              {new Date(todo.createdAtUtc).toLocaleString(
+                                "es-AR",
+                              )}
+                            </p>
+                          </>
+                        );
+                      })()}
+                    </div>
+                    <span
+                      className={
+                        todo.isCompleted
+                          ? "todo-status done"
+                          : "todo-status pending"
+                      }
+                    >
+                      {todo.isCompleted ? "Hecha" : "Pendiente"}
+                    </span>
+                    <div className="todo-actions">
+                      <button
+                        onClick={() => startEdit(todo)}
+                        disabled={isSubmitting}
+                      >
+                        Editar
+                      </button>
+                      <button
+                        onClick={() => handleDelete(todo.id)}
+                        disabled={isSubmitting}
+                      >
+                        Eliminar
+                      </button>
+                    </div>
+                  </>
+                )}
               </li>
             ))}
           </ul>
