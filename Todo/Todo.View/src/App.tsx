@@ -180,30 +180,6 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="hero-panel">
-        <p className="eyebrow">Todo dashboard</p>
-        <h1>Tu lista vive en la API y se actualiza desde React.</h1>
-        <p className="hero-copy">
-          Este frontend consume <strong>/api/todos</strong> y crea nuevas tareas
-          contra el backend en tiempo real.
-        </p>
-
-        <div className="stats-grid">
-          <article>
-            <span>Total</span>
-            <strong>{todos.length}</strong>
-          </article>
-          <article>
-            <span>Pendientes</span>
-            <strong>{pendingCount}</strong>
-          </article>
-          <article>
-            <span>Completadas</span>
-            <strong>{todos.length - pendingCount}</strong>
-          </article>
-        </div>
-      </section>
-
       <section className="workspace-panel">
         <form className="todo-form" onSubmit={handleSubmit}>
           <label className="field-label" htmlFor="todo-title">
