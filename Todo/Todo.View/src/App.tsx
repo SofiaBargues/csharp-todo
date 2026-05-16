@@ -6,6 +6,8 @@ import {
   type FormEvent,
 } from "react";
 import {
+  Bell,
+  CalendarDays,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
@@ -18,9 +20,9 @@ import {
   Paperclip,
   Pencil,
   Plus,
-  SlidersHorizontal,
+  Star,
   Tag,
-  Trash2,
+  UserPlus,
   UsersRound,
   X,
 } from "lucide-react";
@@ -36,6 +38,7 @@ type EditState = {
   section: string;
   dueDate: string;
   isCompleted: boolean;
+  ownerId: string;
 } | null;
 
 type TodoItem = {
@@ -44,6 +47,14 @@ type TodoItem = {
   isCompleted: boolean;
   section: string;
   dueDate: string | null;
+  ownerId: string | null;
+  createdAtUtc: string;
+};
+
+type Owner = {
+  id: string;
+  name: string;
+  initials: string;
   createdAtUtc: string;
 };
 
@@ -60,6 +71,7 @@ type NewIssueState = {
   description: string;
   section: string;
   dueDate: string;
+  ownerId: string;
   status: "pending" | "completed";
 };
 
@@ -78,6 +90,7 @@ const emptyIssue: NewIssueState = {
   description: "",
   section: "Todo",
   dueDate: "",
+  ownerId: "",
   status: "pending",
 };
 
@@ -86,13 +99,16 @@ const formatDueDate = (dueDate: string | null) => {
     return "No date";
   }
 
-  const [year, month, day] = dueDate.split("-");
+  const date = new Date(`${dueDate}T00:00:00`);
 
-  if (!year || !month || !day) {
+  if (Number.isNaN(date.getTime())) {
     return dueDate;
   }
 
-  return `${month}/${day}/${year}`;
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
 };
 
 const normalize = (value: string) => value.trim().toLowerCase();
@@ -147,8 +163,11 @@ const sortGroups = (left: string, right: string) => {
 };
 
 function App() {
+  const [owners, setOwners] = useState<Owner[]>([]);
+  const [selectedOwnerId, setSelectedOwnerId] = useState<string>("");
   const [todos, setTodos] = useState<TodoItem[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingOwners, setIsLoadingOwners] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editState, setEditState] = useState<EditState>(null);
@@ -175,7 +194,44 @@ function App() {
   });
   const [isAddingView, setIsAddingView] = useState(false);
   const [newViewName, setNewViewName] = useState("");
+  const [isOwnerMenuOpen, setIsOwnerMenuOpen] = useState(false);
+  const [isAddingOwner, setIsAddingOwner] = useState(false);
+  const [newOwnerName, setNewOwnerName] = useState("");
   const [newIssue, setNewIssue] = useState<NewIssueState>(emptyIssue);
+  const [selectedDueDate, setSelectedDueDate] = useState("");
+
+  useEffect(() => {
+    const loadOwners = async () => {
+      try {
+        setIsLoadingOwners(true);
+        setError(null);
+
+        const response = await fetch("/api/owners");
+
+        if (!response.ok) {
+          throw new Error("Could not load owners.");
+        }
+
+        const data = (await response.json()) as Owner[];
+        setOwners(data);
+        setSelectedOwnerId((currentOwnerId) => {
+          if (currentOwnerId && data.some((owner) => owner.id === currentOwnerId)) {
+            return currentOwnerId;
+          }
+
+          return data[0]?.id ?? "";
+        });
+      } catch {
+        setError(
+          "Could not connect to the API. Make sure the backend is running.",
+        );
+      } finally {
+        setIsLoadingOwners(false);
+      }
+    };
+
+    void loadOwners();
+  }, []);
 
   useEffect(() => {
     const loadTodos = async () => {
@@ -209,8 +265,17 @@ function App() {
 
   const views = useMemo(() => [...baseViews, ...customViews], [customViews]);
   const activeView = views.find((view) => view.id === activeViewId) ?? views[0];
+  const activeOwner = owners.find((owner) => owner.id === selectedOwnerId);
+  const ownerById = useMemo(
+    () => new Map(owners.map((owner) => [owner.id, owner])),
+    [owners],
+  );
 
   const filteredTodos = todos.filter((todo) => {
+    if (selectedDueDate && todo.dueDate !== selectedDueDate) {
+      return false;
+    }
+
     if (activeView.kind === "active") {
       return !todo.isCompleted;
     }
@@ -241,8 +306,19 @@ function App() {
   }, [filteredTodos]);
 
   const canCreateIssue = Boolean(
-    newIssue.title.trim() && newIssue.section.trim() && newIssue.dueDate,
+    newIssue.title.trim() &&
+      newIssue.section.trim() &&
+      newIssue.dueDate,
   );
+  const canEditIssue = Boolean(
+    editState?.title.trim() && editState.section.trim() && editState.dueDate,
+  );
+  const newIssueOwner = newIssue.ownerId
+    ? ownerById.get(newIssue.ownerId)
+    : undefined;
+  const editIssueOwner = editState?.ownerId
+    ? ownerById.get(editState.ownerId)
+    : undefined;
 
   const handleAddView = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -287,6 +363,62 @@ function App() {
     }
   };
 
+  const handleAddOwner = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const name = newOwnerName.trim();
+
+    if (!name) {
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+      setError(null);
+
+      const response = await fetch("/api/owners", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ name }),
+      });
+
+      if (response.status === 409) {
+        const data = (await response.json()) as { owner?: Owner };
+        const existingOwner = data.owner;
+
+        if (existingOwner) {
+          setOwners((currentOwners) =>
+            currentOwners.some((owner) => owner.id === existingOwner.id)
+              ? currentOwners
+              : [...currentOwners, existingOwner],
+          );
+          setSelectedOwnerId(existingOwner.id);
+          setNewOwnerName("");
+          setIsAddingOwner(false);
+          setIsOwnerMenuOpen(false);
+          return;
+        }
+      }
+
+      if (!response.ok) {
+        throw new Error("Could not save owner.");
+      }
+
+      const createdOwner = (await response.json()) as Owner;
+      setOwners((currentOwners) => [...currentOwners, createdOwner]);
+      setSelectedOwnerId(createdOwner.id);
+      setNewOwnerName("");
+      setIsAddingOwner(false);
+      setIsOwnerMenuOpen(false);
+    } catch {
+      setError("Could not save the owner.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const toggleGroup = (groupLabel: string) => {
     setCollapsedGroups((currentGroups) => {
       const nextGroups = new Set(currentGroups);
@@ -302,17 +434,22 @@ function App() {
   };
 
   const openNewIssueModal = (groupLabel?: string) => {
+    setEditState(null);
+
     const normalizedGroup = normalize(groupLabel ?? "");
     const isDoneGroup = normalizedGroup === "done";
     const sectionLabel =
-      groupLabel && !isDoneGroup ? groupLabel : getDefaultSectionForView(activeView);
+      groupLabel && !isDoneGroup
+        ? groupLabel
+        : getDefaultSectionForView(activeView);
 
     setNewIssue({
       isOpen: true,
       title: "",
       description: "",
       section: sectionLabel,
-      dueDate: "",
+      dueDate: selectedDueDate,
+      ownerId: selectedOwnerId,
       status: isDoneGroup ? "completed" : "pending",
     });
   };
@@ -342,18 +479,23 @@ function App() {
       setTodos((currentTodos: TodoItem[]) =>
         currentTodos.filter((todo: TodoItem) => todo.id !== id),
       );
+      setEditState((currentEditState) =>
+        currentEditState?.id === id ? null : currentEditState,
+      );
     } catch {
       setError("Could not delete the task.");
     }
   };
 
   const startEdit = (todo: TodoItem) => {
+    setNewIssue(emptyIssue);
     setEditState({
       id: todo.id,
       title: todo.title,
       section: todo.section,
       dueDate: todo.dueDate ?? "",
       isCompleted: todo.isCompleted,
+      ownerId: todo.ownerId ?? "",
     });
   };
 
@@ -385,6 +527,7 @@ function App() {
           section: nextSection,
           dueDate: newIssue.dueDate,
           isCompleted: newIssue.status === "completed",
+          ownerId: newIssue.ownerId || null,
         }),
       });
 
@@ -433,6 +576,7 @@ function App() {
           section: nextSection,
           dueDate: editState.dueDate,
           isCompleted: editState.isCompleted,
+          ownerId: editState.ownerId || null,
         }),
       });
 
@@ -457,6 +601,135 @@ function App() {
 
   return (
     <main className="min-h-screen bg-[#0f1012] text-zinc-100">
+      <header className="border-b border-zinc-900 bg-[#101113]">
+        <div className="mx-auto flex h-11 w-full max-w-6xl items-center gap-3 px-3 sm:px-5">
+          <div className="relative">
+            <button
+              type="button"
+              className="inline-flex h-8 items-center gap-2 rounded-md px-2 text-sm font-semibold text-zinc-100 hover:bg-zinc-900"
+              onClick={() => setIsOwnerMenuOpen((isOpen) => !isOpen)}
+              disabled={isLoadingOwners}
+              aria-expanded={isOwnerMenuOpen}
+            >
+              <span className="inline-flex size-6 items-center justify-center rounded-md bg-emerald-500 text-[10px] font-black text-zinc-950">
+                {activeOwner?.initials ?? "..."}
+              </span>
+              <span className="max-w-36 truncate">
+                {activeOwner?.name ?? "Loading"}
+              </span>
+              <ChevronDown className="size-4 text-zinc-500" />
+            </button>
+
+            {isOwnerMenuOpen ? (
+              <div className="absolute left-0 top-10 z-40 w-72 overflow-hidden rounded-lg border border-zinc-800 bg-[#1a1b1d] shadow-2xl">
+                <div className="border-b border-zinc-800 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                  Owners
+                </div>
+                <div className="max-h-64 overflow-y-auto p-1">
+                  {owners.map((owner) => (
+                    <button
+                      key={owner.id}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-zinc-800",
+                        owner.id === selectedOwnerId
+                          ? "text-zinc-100"
+                          : "text-zinc-400",
+                      )}
+                      onClick={() => {
+                        setSelectedOwnerId(owner.id);
+                        setIsOwnerMenuOpen(false);
+                      }}
+                    >
+                      <span className="inline-flex size-7 items-center justify-center rounded-md bg-zinc-800 text-[10px] font-black text-emerald-300">
+                        {owner.initials}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate font-medium">
+                        {owner.name}
+                      </span>
+                      {owner.id === selectedOwnerId ? (
+                        <CheckCircle2 className="size-4 text-emerald-400" />
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="border-t border-zinc-800 p-2">
+                  {isAddingOwner ? (
+                    <form className="flex items-center gap-2" onSubmit={handleAddOwner}>
+                      <Input
+                        className="h-8 border-zinc-700 bg-[#111113] text-sm text-zinc-100 placeholder:text-zinc-600"
+                        value={newOwnerName}
+                        onChange={(event) => setNewOwnerName(event.target.value)}
+                        placeholder="Owner name"
+                        autoFocus
+                        disabled={isSubmitting}
+                      />
+                      <Button
+                        type="submit"
+                        size="icon"
+                        className="size-8 bg-emerald-500 text-zinc-950 hover:bg-emerald-400"
+                        disabled={isSubmitting || !newOwnerName.trim()}
+                        aria-label="Save owner"
+                      >
+                        {isSubmitting ? (
+                          <Loader2 className="animate-spin" />
+                        ) : (
+                          <CheckCircle2 />
+                        )}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="size-8 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
+                        onClick={() => {
+                          setIsAddingOwner(false);
+                          setNewOwnerName("");
+                        }}
+                        disabled={isSubmitting}
+                        aria-label="Cancel owner"
+                      >
+                        <X />
+                      </Button>
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                      onClick={() => setIsAddingOwner(true)}
+                    >
+                      <UserPlus className="size-4" />
+                      Add owner
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <ChevronRight className="size-4 text-zinc-600" />
+          <span className="text-sm font-semibold text-zinc-200">Issues</span>
+          <ChevronRight className="size-4 text-zinc-600" />
+          <span className="text-sm font-semibold text-zinc-200">Issues</span>
+
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-900 hover:text-zinc-100"
+            aria-label="Favorite issues"
+          >
+            <Star className="size-4" />
+          </button>
+          <button
+            type="button"
+            className="ml-auto rounded-md p-1.5 text-zinc-500 hover:bg-zinc-900 hover:text-zinc-100"
+            aria-label="Notifications"
+          >
+            <Bell className="size-4" />
+          </button>
+        </div>
+      </header>
+
       <section className="mx-auto flex w-full max-w-6xl flex-col px-3 py-3 sm:px-5">
         <div className="flex flex-wrap items-center gap-2 pb-2">
           {views.map((view) => {
@@ -539,6 +812,30 @@ function App() {
               <Pencil className="size-3" />
             </button>
           )}
+
+          <div className="ml-auto flex h-8 items-center gap-2 rounded-full border border-zinc-800 bg-[#111113] px-3 text-sm text-zinc-400">
+            <CalendarDays className="size-4" />
+            <input
+              type="date"
+              className="h-6 bg-transparent text-sm text-zinc-200 outline-none [color-scheme:dark]"
+              value={selectedDueDate}
+              onChange={(event) => setSelectedDueDate(event.target.value)}
+              onInput={(event: FormEvent<HTMLInputElement>) =>
+                setSelectedDueDate(event.currentTarget.value)
+              }
+              aria-label="Filter by due date"
+            />
+            {selectedDueDate ? (
+              <button
+                type="button"
+                className="text-zinc-500 hover:text-zinc-100"
+                aria-label="Clear due date filter"
+                onClick={() => setSelectedDueDate("")}
+              >
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {error ? (
@@ -547,18 +844,26 @@ function App() {
           </div>
         ) : null}
 
-        {isLoading ? (
+        {isLoading || isLoadingOwners ? (
           <div className="mt-3 flex items-center gap-2 rounded-md border border-zinc-800 bg-[#171719] p-4 text-sm text-zinc-400">
             <Loader2 className="size-4 animate-spin" />
-            Loading tasks...
+            Loading workspace...
           </div>
         ) : null}
 
-        {!isLoading && !error ? (
+        {!isLoading && !isLoadingOwners && !error ? (
           <div className="mt-3 space-y-2">
             {filteredTodos.length === 0 ? (
-              <div className="rounded-md border border-dashed border-zinc-800 p-8 text-center text-sm text-zinc-500">
-                No tasks in this view.
+              <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-zinc-800 p-8 text-center text-sm text-zinc-500">
+                <span>No tasks in this view.</span>
+                <Button
+                  type="button"
+                  className="h-8 rounded-full bg-indigo-500 px-4 text-xs font-semibold text-white hover:bg-indigo-400"
+                  onClick={() => openNewIssueModal()}
+                >
+                  <Plus />
+                  Add issue
+                </Button>
               </div>
             ) : null}
 
@@ -609,152 +914,46 @@ function App() {
                       const sectionLabel = getSectionLabel(todo);
                       const dueDateLabel = formatDueDate(todo.dueDate);
                       const issueNumber = todo.id.slice(0, 4).toUpperCase();
+                      const owner = todo.ownerId
+                        ? ownerById.get(todo.ownerId)
+                        : undefined;
 
                       return (
-                        <div
+                        <button
+                          type="button"
                           key={todo.id}
-                          className="px-3 py-3 hover:bg-zinc-900/55"
+                          className="block w-full px-3 py-3 text-left hover:bg-zinc-900/55 focus-visible:bg-zinc-900/70 focus-visible:outline-none"
+                          onClick={() => startEdit(todo)}
+                          disabled={isSubmitting}
                         >
-                          {editState && editState.id === todo.id ? (
-                            <form
-                              className="grid gap-2 md:grid-cols-[minmax(0,1.3fr)_minmax(0,0.9fr)_minmax(10rem,0.7fr)_minmax(9rem,0.6fr)_auto_auto]"
-                              onSubmit={handleEditSubmit}
-                            >
-                              <Input
-                                type="text"
-                                className="border-zinc-800 bg-[#111113] text-zinc-100"
-                                value={editState.title}
-                                onChange={(event) =>
-                                  setEditState({
-                                    ...editState,
-                                    title: event.target.value,
-                                  })
-                                }
-                                disabled={isSubmitting}
-                              />
-                              <Input
-                                type="text"
-                                className="border-zinc-800 bg-[#111113] text-zinc-100"
-                                value={editState.section}
-                                onChange={(event) =>
-                                  setEditState({
-                                    ...editState,
-                                    section: event.target.value,
-                                  })
-                                }
-                                disabled={isSubmitting}
-                              />
-                              <Input
-                                type="date"
-                                aria-label="Due Date"
-                                className="border-zinc-800 bg-[#111113] text-zinc-100"
-                                value={editState.dueDate}
-                                onChange={(event) =>
-                                  setEditState({
-                                    ...editState,
-                                    dueDate: event.target.value,
-                                  })
-                                }
-                                disabled={isSubmitting}
-                              />
-                              <Select
-                                value={
-                                  editState.isCompleted
-                                    ? "completed"
-                                    : "pending"
-                                }
-                                onChange={(event) =>
-                                  setEditState({
-                                    ...editState,
-                                    isCompleted:
-                                      event.target.value === "completed",
-                                  })
-                                }
-                                disabled={isSubmitting}
-                                aria-label="Status"
-                                className="border-zinc-800 bg-[#111113] text-zinc-100"
-                              >
-                                <option value="pending">Pending</option>
-                                <option value="completed">Done</option>
-                              </Select>
-                              <Button
-                                type="submit"
-                                disabled={
-                                  isSubmitting ||
-                                  !editState.title.trim() ||
-                                  !editState.section.trim() ||
-                                  !editState.dueDate
-                                }
-                              >
-                                Save
-                              </Button>
-                              <Button
-                                type="button"
-                                variant="outline"
-                                onClick={cancelEdit}
-                                disabled={isSubmitting}
-                              >
-                                <X />
-                                Cancel
-                              </Button>
-                            </form>
-                          ) : (
-                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-                                <span className="font-mono text-zinc-600">
-                                  ---
-                                </span>
-                                <span className="font-medium text-zinc-500">
-                                  SOF-{issueNumber}
-                                </span>
-                                {getGroupIcon(groupLabel)}
-                                <h2 className="min-w-0 break-words font-semibold text-zinc-100">
-                                  {todo.title}
-                                </h2>
-                                <span className="rounded-sm border border-zinc-800 px-1.5 py-0.5 text-xs text-zinc-500">
-                                  {sectionLabel}
-                                </span>
-                              </div>
-                              <div className="flex shrink-0 items-center justify-between gap-2 text-sm text-zinc-500 md:justify-end">
-                                <span className="inline-flex items-center gap-1">
-                                  <UsersRound className="size-4" />
-                                  {dueDateLabel}
-                                </span>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label="View options"
-                                  className="text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
-                                >
-                                  <SlidersHorizontal />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label="Edit task"
-                                  className="text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
-                                  onClick={() => startEdit(todo)}
-                                  disabled={isSubmitting}
-                                >
-                                  <Pencil />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label="Delete task"
-                                  className="text-zinc-500 hover:bg-zinc-800 hover:text-red-300"
-                                  onClick={() => handleDelete(todo.id)}
-                                  disabled={isSubmitting}
-                                >
-                                  <Trash2 />
-                                </Button>
-                              </div>
+                          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+                              <span className="font-medium text-zinc-500">
+                                SB-{issueNumber}
+                              </span>
+                              {getGroupIcon(groupLabel)}
+                              <h2 className="min-w-0 break-words font-semibold text-zinc-100">
+                                {todo.title}
+                              </h2>
+                              <span className="rounded-sm border border-zinc-800 px-1.5 py-0.5 text-xs text-zinc-500">
+                                {sectionLabel}
+                              </span>
                             </div>
-                          )}
-                        </div>
+                            <div className="flex shrink-0 items-center justify-between gap-2 text-sm text-zinc-500 md:justify-end">
+                              <span className="inline-flex h-7 items-center gap-2 rounded-full border border-zinc-800 bg-[#111113] px-3 text-sm text-zinc-400">
+                                <CalendarDays className="size-4 text-orange-500" />
+                                {dueDateLabel}
+                              </span>
+                              <span
+                                className="inline-flex size-7 items-center justify-center rounded-full border border-zinc-800 bg-[#111113] text-[10px] font-black text-zinc-500"
+                                title={owner?.name ?? "Unassigned"}
+                                aria-label={owner?.name ?? "Unassigned"}
+                              >
+                                {owner?.initials ?? <UsersRound className="size-4" />}
+                              </span>
+                            </div>
+                          </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -774,7 +973,7 @@ function App() {
             <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
                 <span className="rounded-full bg-zinc-800 px-2 py-1 text-xs text-emerald-300">
-                  SOF
+                  {newIssueOwner?.initials ?? <UsersRound className="inline size-3" />}
                 </span>
                 <ChevronRight className="size-4 text-zinc-500" />
                 <span>New issue</span>
@@ -870,13 +1069,28 @@ function App() {
                   aria-label="Issue due date"
                   disabled={isSubmitting}
                 />
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-3 text-xs font-semibold text-zinc-400"
-                >
-                  <UsersRound className="size-3.5" />
-                  Assignee
-                </button>
+                <div className="relative">
+                  <UsersRound className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-400" />
+                  <Select
+                    className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 py-1 pl-8 pr-3 text-xs font-semibold text-zinc-100"
+                    value={newIssue.ownerId}
+                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                      setNewIssue((currentIssue) => ({
+                        ...currentIssue,
+                        ownerId: event.target.value,
+                      }))
+                    }
+                    aria-label="Issue owner"
+                    disabled={isSubmitting}
+                  >
+                    <option value="">Unassigned</option>
+                    {owners.map((owner) => (
+                      <option key={owner.id} value={owner.id}>
+                        {owner.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
                 <button
                   type="button"
                   className="inline-flex h-8 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-3 text-xs font-semibold text-zinc-400"
@@ -916,10 +1130,184 @@ function App() {
                   disabled={isSubmitting || !canCreateIssue}
                   className="h-9 rounded-full bg-indigo-500 px-4 text-xs font-semibold hover:bg-indigo-400"
                 >
-                  {isSubmitting ? (
-                    <Loader2 className="animate-spin" />
-                  ) : null}
+                  {isSubmitting ? <Loader2 className="animate-spin" /> : null}
                   Create issue
+                </Button>
+              </div>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {editState ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-3 py-5 sm:py-8">
+          <form
+            className="flex min-h-[16rem] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-[#1d1d1f] shadow-2xl"
+            onSubmit={handleEditSubmit}
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
+                <span className="rounded-full bg-zinc-800 px-2 py-1 text-xs text-emerald-300">
+                  {editIssueOwner?.initials ?? <UsersRound className="inline size-3" />}
+                </span>
+                <ChevronRight className="size-4 text-zinc-500" />
+                <span>Edit issue</span>
+              </div>
+              <div className="flex items-center gap-1 text-zinc-500">
+                <button
+                  type="button"
+                  className="rounded-md p-1.5 hover:bg-zinc-800 hover:text-zinc-100"
+                  aria-label="Expand edit modal"
+                >
+                  <Maximize2 className="size-4" />
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md p-1.5 hover:bg-zinc-800 hover:text-zinc-100"
+                  aria-label="Close edit issue"
+                  onClick={cancelEdit}
+                  disabled={isSubmitting}
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-1 flex-col gap-4 px-5 py-5">
+              <input
+                className="w-full bg-transparent text-xl font-semibold text-zinc-100 outline-none placeholder:text-zinc-500"
+                value={editState.title}
+                onChange={(event) =>
+                  setEditState({
+                    ...editState,
+                    title: event.target.value,
+                  })
+                }
+                placeholder="Issue title"
+                autoFocus
+                disabled={isSubmitting}
+              />
+              <textarea
+                className="min-h-20 w-full resize-none bg-transparent text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
+                defaultValue=""
+                placeholder="Add description..."
+                disabled
+              />
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Select
+                  className="h-8 w-auto rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
+                  value={editState.isCompleted ? "completed" : "pending"}
+                  onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                    setEditState({
+                      ...editState,
+                      isCompleted: event.target.value === "completed",
+                    })
+                  }
+                  aria-label="Issue status"
+                  disabled={isSubmitting}
+                >
+                  <option value="pending">In Progress</option>
+                  <option value="completed">Done</option>
+                </Select>
+                <Input
+                  className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100 placeholder:text-zinc-500"
+                  value={editState.section}
+                  onChange={(event) =>
+                    setEditState({
+                      ...editState,
+                      section: event.target.value,
+                    })
+                  }
+                  placeholder="Section"
+                  disabled={isSubmitting}
+                />
+                <Input
+                  className="h-8 w-40 rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
+                  type="date"
+                  value={editState.dueDate}
+                  onChange={(event) =>
+                    setEditState({
+                      ...editState,
+                      dueDate: event.target.value,
+                    })
+                  }
+                  aria-label="Issue due date"
+                  disabled={isSubmitting}
+                />
+                <div className="relative">
+                  <UsersRound className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-400" />
+                  <Select
+                    className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 py-1 pl-8 pr-3 text-xs font-semibold text-zinc-100"
+                    value={editState.ownerId}
+                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                      setEditState({
+                        ...editState,
+                        ownerId: event.target.value,
+                      })
+                    }
+                    aria-label="Issue owner"
+                    disabled={isSubmitting}
+                  >
+                    <option value="">Unassigned</option>
+                    {owners.map((owner) => (
+                      <option key={owner.id} value={owner.id}>
+                        {owner.name}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-3 text-xs font-semibold text-zinc-400"
+                >
+                  <Tag className="size-3.5" />
+                  Labels
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-zinc-400"
+                  aria-label="More issue options"
+                >
+                  <MoreHorizontal className="size-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between border-t border-zinc-800 px-5 py-3">
+              <button
+                type="button"
+                className="inline-flex size-8 items-center justify-center rounded-full bg-zinc-800 text-zinc-400 hover:text-zinc-100"
+                aria-label="Attach file"
+              >
+                <Paperclip className="size-4" />
+              </button>
+              <div className="flex items-center gap-3">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-9 rounded-full px-4 text-xs font-semibold text-red-300 hover:bg-red-950/40 hover:text-red-200"
+                  onClick={() => handleDelete(editState.id)}
+                  disabled={isSubmitting}
+                >
+                  Delete
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-9 rounded-full px-4 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                  onClick={cancelEdit}
+                  disabled={isSubmitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={isSubmitting || !canEditIssue}
+                  className="h-9 rounded-full bg-indigo-500 px-4 text-xs font-semibold hover:bg-indigo-400"
+                >
+                  {isSubmitting ? <Loader2 className="animate-spin" /> : null}
+                  Save changes
                 </Button>
               </div>
             </div>
