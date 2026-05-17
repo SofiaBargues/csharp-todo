@@ -6,12 +6,18 @@
       "type": "shell",
       "command": "dotnet",
       "args": [
-        "run",
+        "watch",
         "--project",
         ".\\Todo\\Todo.Api\\Todo.Api.csproj",
+        "run",
         "--urls",
         "http://localhost:5000"
       ],
+      "options": {
+        "env": {
+          "ASPNETCORE_ENVIRONMENT": "Development"
+        }
+      },
       "isBackground": true,
       "group": "build",
       "presentation": {

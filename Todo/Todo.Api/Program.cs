@@ -16,6 +16,7 @@ builder.Services.AddCors(options =>
             .AllowAnyMethod();
     });
 });
+
 var connectionString = builder.Configuration.GetConnectionString("TodoDb")
     ?? "Data Source=todo.db";
 
@@ -30,36 +31,7 @@ using (var scope = app.Services.CreateScope())
     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
     dbContext.Database.Migrate();
-
-    var defaultOwner = dbContext.Owners.FirstOrDefault();
-
-    if (defaultOwner is null)
-    {
-        defaultOwner = new Owner
-        {
-            Id = Guid.NewGuid(),
-            Name = "Sofia",
-            Initials = "SOF"
-        };
-
-        dbContext.Owners.Add(defaultOwner);
-        dbContext.SaveChanges();
-    }
-
-    if (!dbContext.TodoItems.Any())
-    {
-        dbContext.TodoItems.AddRange(
-            new TodoItem { Title = "Create backend", IsCompleted = true, Section = "Done", OwnerId = defaultOwner.Id },
-            new TodoItem { Title = "Connect React with API", Section = "Todo", OwnerId = defaultOwner.Id },
-            new TodoItem { Title = "Replace InMemory with EF migrations", Section = "Backlog", OwnerId = defaultOwner.Id });
-        dbContext.SaveChanges();
-    }
-    else if (dbContext.TodoItems.Any(item => item.OwnerId == null))
-    {
-        await dbContext.TodoItems
-            .Where(item => item.OwnerId == null)
-            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.OwnerId, defaultOwner.Id));
-    }
+    await SeedDataAsync(dbContext);
 }
 
 if (app.Environment.IsDevelopment())
@@ -72,15 +44,8 @@ if (Directory.Exists(frontendDistPath))
 {
     var frontendFiles = new PhysicalFileProvider(frontendDistPath);
 
-    app.UseDefaultFiles(new DefaultFilesOptions
-    {
-        FileProvider = frontendFiles
-    });
-
-    app.UseStaticFiles(new StaticFileOptions
-    {
-        FileProvider = frontendFiles
-    });
+    app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = frontendFiles });
+    app.UseStaticFiles(new StaticFileOptions { FileProvider = frontendFiles });
 }
 
 app.UseCors("frontend");
@@ -89,7 +54,7 @@ app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
 app.MapGet("/api/owners", async (AppDbContext dbContext) =>
     await dbContext.Owners
-        .OrderBy(item => item.CreatedAtUtc)
+        .OrderBy(owner => owner.Name)
         .Select(owner => new OwnerResponse(owner.Id, owner.Name, owner.Initials, owner.CreatedAtUtc))
         .ToListAsync());
 
@@ -101,7 +66,7 @@ app.MapPost("/api/owners", async (CreateOwnerRequest request, AppDbContext dbCon
     {
         return Results.ValidationProblem(new Dictionary<string, string[]>
         {
-            [nameof(request.Name)] = ["Owner name is required."]
+            [nameof(request.Name)] = ["Assignee name is required."]
         });
     }
 
@@ -112,8 +77,8 @@ app.MapPost("/api/owners", async (CreateOwnerRequest request, AppDbContext dbCon
     {
         return Results.Conflict(new
         {
-            message = "Owner already exists.",
-            owner = new OwnerResponse(existingOwner.Id, existingOwner.Name, existingOwner.Initials, existingOwner.CreatedAtUtc)
+            message = "Assignee already exists.",
+            owner = ToOwnerResponse(existingOwner)
         });
     }
 
@@ -125,150 +90,230 @@ app.MapPost("/api/owners", async (CreateOwnerRequest request, AppDbContext dbCon
     };
 
     dbContext.Owners.Add(owner);
-    dbContext.TodoItems.Add(new TodoItem
-    {
-        Id = Guid.NewGuid(),
-        Title = $"Set up {name}'s first issue",
-        Section = "Todo",
-        DueDate = DateOnly.FromDateTime(DateTime.UtcNow.Date),
-        OwnerId = owner.Id
-    });
-
     await dbContext.SaveChangesAsync();
 
-    return Results.Created(
-        $"/api/owners/{owner.Id}",
-        new OwnerResponse(owner.Id, owner.Name, owner.Initials, owner.CreatedAtUtc));
+    return Results.Created($"/api/owners/{owner.Id}", ToOwnerResponse(owner));
 });
 
-app.MapGet("/api/todos", async (Guid? ownerId, AppDbContext dbContext) =>
+app.MapGet("/api/projects", async (AppDbContext dbContext) =>
 {
-    var query = dbContext.TodoItems.AsQueryable();
-
-    if (ownerId is not null)
-    {
-        query = query.Where(item => item.OwnerId == ownerId);
-    }
-
-    return await query
-        .OrderBy(item => item.CreatedAtUtc)
+    var projects = await dbContext.Projects
+        .Include(project => project.TodoItems)
+        .OrderBy(project => project.CreatedAtUtc)
         .ToListAsync();
+
+    return projects.Select(ToProjectResponse).ToList();
 });
 
-app.MapPost("/api/todos", async (CreateTodoRequest request, AppDbContext dbContext) =>
+app.MapGet("/api/projects/{id:guid}", async (Guid id, AppDbContext dbContext) =>
 {
-    var title = request.Title?.Trim();
-    var section = request.Section?.Trim();
+    var project = await dbContext.Projects
+        .Include(project => project.TodoItems)
+            .ThenInclude(issue => issue.Owner)
+        .FirstOrDefaultAsync(project => project.Id == id);
 
-    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section) || request.DueDate is null)
+    return project is null
+        ? Results.NotFound()
+        : Results.Ok(ToProjectDetailResponse(project));
+});
+
+app.MapPost("/api/projects", async (CreateProjectRequest request, AppDbContext dbContext) =>
+{
+    var name = request.Name?.Trim();
+
+    if (string.IsNullOrWhiteSpace(name))
     {
         return Results.ValidationProblem(new Dictionary<string, string[]>
         {
-            [nameof(request.Title)] = string.IsNullOrWhiteSpace(title)
-                ? ["Title is required."]
-                : [],
-            [nameof(request.Section)] = string.IsNullOrWhiteSpace(section)
-                ? ["Section is required."]
-                : [],
-            [nameof(request.DueDate)] = request.DueDate is null
-                ? ["Due date is required."]
-                : [],
-        }.Where(entry => entry.Value.Length > 0)
-         .ToDictionary(entry => entry.Key, entry => entry.Value));
-    }
-
-    if (request.OwnerId is not null &&
-        !await dbContext.Owners.AnyAsync(owner => owner.Id == request.OwnerId))
-    {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            [nameof(request.OwnerId)] = ["Owner does not exist."]
+            [nameof(request.Name)] = ["Project name is required."]
         });
     }
 
-    var todoItem = new TodoItem
+    var project = new Project
     {
         Id = Guid.NewGuid(),
-        Title = title,
-        Section = section,
-        DueDate = request.DueDate,
-        OwnerId = request.OwnerId,
-        IsCompleted = request.IsCompleted
+        Name = name,
+        Description = request.Description?.Trim() ?? string.Empty
     };
 
-    dbContext.TodoItems.Add(todoItem);
+    dbContext.Projects.Add(project);
     await dbContext.SaveChangesAsync();
 
-    return Results.Created($"/api/todos/{todoItem.Id}", todoItem);
+    return Results.Created($"/api/projects/{project.Id}", ToProjectResponse(project));
 });
 
-// PUT: Update a TodoItem
-app.MapPut("/api/todos/{id:guid}", async (Guid id, UpdateTodoRequest request, AppDbContext dbContext) =>
+app.MapPut("/api/projects/{id:guid}", async (Guid id, UpdateProjectRequest request, AppDbContext dbContext) =>
 {
-    var todoItem = await dbContext.TodoItems.FindAsync(id);
-    if (todoItem is null)
-        return Results.NotFound();
+    var project = await dbContext.Projects.FindAsync(id);
 
-    var title = request.Title?.Trim();
-    var section = request.Section?.Trim();
-    if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(section) || request.DueDate is null)
+    if (project is null)
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            [nameof(request.Title)] = string.IsNullOrWhiteSpace(title)
-                ? ["Title is required."]
-                : [],
-            [nameof(request.Section)] = string.IsNullOrWhiteSpace(section)
-                ? ["Section is required."]
-                : [],
-            [nameof(request.DueDate)] = request.DueDate is null
-                ? ["Due date is required."]
-                : []
-        }.Where(entry => entry.Value.Length > 0)
-         .ToDictionary(entry => entry.Key, entry => entry.Value));
+        return Results.NotFound();
     }
 
-    if (request.OwnerId is not null &&
-        !await dbContext.Owners.AnyAsync(owner => owner.Id == request.OwnerId))
+    var name = request.Name?.Trim();
+
+    if (string.IsNullOrWhiteSpace(name))
     {
         return Results.ValidationProblem(new Dictionary<string, string[]>
         {
-            [nameof(request.OwnerId)] = ["Owner does not exist."]
+            [nameof(request.Name)] = ["Project name is required."]
         });
     }
 
-    todoItem.Title = title;
-    todoItem.Section = section;
-    todoItem.DueDate = request.DueDate;
-    todoItem.IsCompleted = request.IsCompleted;
-    todoItem.OwnerId = request.OwnerId;
+    project.Name = name;
+    project.Description = request.Description?.Trim() ?? string.Empty;
     await dbContext.SaveChangesAsync();
-    return Results.Ok(todoItem);
+
+    return Results.Ok(ToProjectResponse(project));
 });
 
-// PATCH: Update only the TodoItem status
-app.MapPatch("/api/todos/{id:guid}/status", async (Guid id, UpdateTodoStatusRequest request, AppDbContext dbContext) =>
+app.MapGet("/api/issues", async (Guid? projectId, AppDbContext dbContext) =>
 {
-    var todoItem = await dbContext.TodoItems.FindAsync(id);
-    if (todoItem is null)
-        return Results.NotFound();
+    var query = dbContext.TodoItems
+        .Include(issue => issue.Owner)
+        .Include(issue => issue.Project)
+        .AsQueryable();
 
-    todoItem.IsCompleted = request.IsCompleted;
-    await dbContext.SaveChangesAsync();
+    if (projectId is not null)
+    {
+        query = query.Where(issue => issue.ProjectId == projectId);
+    }
 
-    return Results.Ok(todoItem);
+    var issues = await query
+        .OrderBy(issue => issue.IssueNumber)
+        .ToListAsync();
+
+    return issues.Select(ToIssueResponse).ToList();
 });
 
-// DELETE: Delete a TodoItem
-app.MapDelete("/api/todos/{id:guid}", async (Guid id, AppDbContext dbContext) =>
+app.MapGet("/api/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
 {
-    var todoItem = await dbContext.TodoItems.FindAsync(id);
-    if (todoItem is null)
-        return Results.NotFound();
+    var issue = await dbContext.TodoItems
+        .Include(issue => issue.Owner)
+        .Include(issue => issue.Project)
+        .FirstOrDefaultAsync(issue => issue.Id == id);
 
-    dbContext.TodoItems.Remove(todoItem);
+    return issue is null
+        ? Results.NotFound()
+        : Results.Ok(ToIssueResponse(issue));
+});
+
+app.MapPost("/api/issues", async (CreateIssueRequest request, AppDbContext dbContext) =>
+{
+    var validation = await ValidateIssueRequestAsync(request.Title, request.Status, request.ProjectId, request.OwnerId, dbContext);
+
+    if (validation is not null)
+    {
+        return validation;
+    }
+
+    var status = NormalizeStatus(request.Status);
+    var nextIssueNumber = await GetNextIssueNumberAsync(dbContext);
+    var issue = new TodoItem
+    {
+        Id = Guid.NewGuid(),
+        IssueNumber = nextIssueNumber,
+        Title = request.Title!.Trim(),
+        Description = request.Description?.Trim() ?? string.Empty,
+        Status = status,
+        IsCompleted = IsCompletedStatus(status),
+        ProjectId = request.ProjectId,
+        OwnerId = request.OwnerId
+    };
+
+    dbContext.TodoItems.Add(issue);
     await dbContext.SaveChangesAsync();
+
+    var createdIssue = await LoadIssueAsync(issue.Id, dbContext);
+
+    return Results.Created($"/api/issues/{issue.Id}", ToIssueResponse(createdIssue!));
+});
+
+app.MapPut("/api/issues/{id:guid}", async (Guid id, UpdateIssueRequest request, AppDbContext dbContext) =>
+{
+    var issue = await dbContext.TodoItems.FindAsync(id);
+
+    if (issue is null)
+    {
+        return Results.NotFound();
+    }
+
+    var validation = await ValidateIssueRequestAsync(request.Title, request.Status, request.ProjectId, request.OwnerId, dbContext);
+
+    if (validation is not null)
+    {
+        return validation;
+    }
+
+    var status = NormalizeStatus(request.Status);
+    issue.Title = request.Title!.Trim();
+    issue.Description = request.Description?.Trim() ?? string.Empty;
+    issue.Status = status;
+    issue.IsCompleted = IsCompletedStatus(status);
+    issue.ProjectId = request.ProjectId;
+    issue.OwnerId = request.OwnerId;
+
+    await dbContext.SaveChangesAsync();
+
+    var updatedIssue = await LoadIssueAsync(issue.Id, dbContext);
+
+    return Results.Ok(ToIssueResponse(updatedIssue!));
+});
+
+app.MapPatch("/api/issues/{id:guid}/status", async (Guid id, UpdateIssueStatusRequest request, AppDbContext dbContext) =>
+{
+    var issue = await dbContext.TodoItems.FindAsync(id);
+
+    if (issue is null)
+    {
+        return Results.NotFound();
+    }
+
+    var status = NormalizeStatus(request.Status);
+
+    if (!IssueStatusCatalog.All.Contains(status))
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            [nameof(request.Status)] = ["Status does not exist."]
+        });
+    }
+
+    issue.Status = status;
+    issue.IsCompleted = IsCompletedStatus(status);
+    await dbContext.SaveChangesAsync();
+
+    var updatedIssue = await LoadIssueAsync(issue.Id, dbContext);
+
+    return Results.Ok(ToIssueResponse(updatedIssue!));
+});
+
+app.MapDelete("/api/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
+{
+    var issue = await dbContext.TodoItems.FindAsync(id);
+
+    if (issue is null)
+    {
+        return Results.NotFound();
+    }
+
+    dbContext.TodoItems.Remove(issue);
+    await dbContext.SaveChangesAsync();
+
     return Results.NoContent();
+});
+
+// Backwards-compatible aliases while the app finishes moving away from "todos".
+app.MapGet("/api/todos", async (AppDbContext dbContext) =>
+{
+    var issues = await dbContext.TodoItems
+        .Include(issue => issue.Owner)
+        .Include(issue => issue.Project)
+        .OrderBy(issue => issue.IssueNumber)
+        .ToListAsync();
+
+    return issues.Select(ToIssueResponse).ToList();
 });
 
 if (Directory.Exists(frontendDistPath))
@@ -282,6 +327,185 @@ if (Directory.Exists(frontendDistPath))
 
 app.Run();
 
+static async Task SeedDataAsync(AppDbContext dbContext)
+{
+    var defaultOwner = await dbContext.Owners.FirstOrDefaultAsync();
+
+    if (defaultOwner is null)
+    {
+        defaultOwner = new Owner
+        {
+            Id = Guid.NewGuid(),
+            Name = "Sofia Bargues",
+            Initials = "SOF"
+        };
+
+        dbContext.Owners.Add(defaultOwner);
+        await dbContext.SaveChangesAsync();
+    }
+
+    var defaultProject = await dbContext.Projects.FirstOrDefaultAsync();
+
+    if (defaultProject is null)
+    {
+        defaultProject = new Project
+        {
+            Id = Guid.NewGuid(),
+            Name = "Alpha",
+            Description = "Default product workspace."
+        };
+
+        dbContext.Projects.Add(defaultProject);
+        await dbContext.SaveChangesAsync();
+    }
+
+    if (!await dbContext.TodoItems.AnyAsync())
+    {
+        dbContext.TodoItems.AddRange(
+            new TodoItem
+            {
+                Id = Guid.NewGuid(),
+                IssueNumber = 1,
+                Title = "Set up the first project",
+                Description = "Create the first workspace project and keep the issue list grouped by status.",
+                Status = "In Progress",
+                ProjectId = defaultProject.Id,
+                OwnerId = defaultOwner.Id
+            },
+            new TodoItem
+            {
+                Id = Guid.NewGuid(),
+                IssueNumber = 2,
+                Title = "Create an editable issue page",
+                Description = "Open an issue on its own route so the URL can be shared.",
+                Status = "Todo",
+                ProjectId = defaultProject.Id,
+                OwnerId = defaultOwner.Id
+            });
+
+        await dbContext.SaveChangesAsync();
+    }
+}
+
+static OwnerResponse ToOwnerResponse(Owner owner) =>
+    new(owner.Id, owner.Name, owner.Initials, owner.CreatedAtUtc);
+
+static ProjectResponse ToProjectResponse(Project project)
+{
+    var issues = project.TodoItems;
+    var doneCount = issues.Count(issue => issue.Status == "Done");
+
+    return new ProjectResponse(
+        project.Id,
+        project.Name,
+        project.Description,
+        issues.Count,
+        doneCount,
+        project.CreatedAtUtc);
+}
+
+static ProjectDetailResponse ToProjectDetailResponse(Project project) =>
+    new(
+        project.Id,
+        project.Name,
+        project.Description,
+        project.TodoItems.Count,
+        project.TodoItems.Count(issue => issue.Status == "Done"),
+        project.CreatedAtUtc,
+        project.TodoItems
+            .OrderBy(issue => issue.IssueNumber)
+            .Select(ToIssueResponse)
+            .ToList());
+
+static IssueResponse ToIssueResponse(TodoItem issue)
+{
+    var codePrefix = issue.Owner?.Initials;
+
+    if (string.IsNullOrWhiteSpace(codePrefix))
+    {
+        codePrefix = "ISS";
+    }
+
+    return new IssueResponse(
+        issue.Id,
+        issue.IssueNumber,
+        $"{codePrefix}-{issue.IssueNumber}",
+        issue.Title,
+        issue.Description,
+        issue.Status,
+        issue.IsCompleted,
+        issue.ProjectId,
+        issue.Project?.Name ?? string.Empty,
+        issue.OwnerId,
+        issue.Owner is null ? null : ToOwnerResponse(issue.Owner),
+        issue.CreatedAtUtc);
+}
+
+static async Task<TodoItem?> LoadIssueAsync(Guid id, AppDbContext dbContext) =>
+    await dbContext.TodoItems
+        .Include(issue => issue.Owner)
+        .Include(issue => issue.Project)
+        .FirstOrDefaultAsync(issue => issue.Id == id);
+
+static async Task<int> GetNextIssueNumberAsync(AppDbContext dbContext)
+{
+    var lastIssueNumber = await dbContext.TodoItems
+        .Select(issue => (int?)issue.IssueNumber)
+        .MaxAsync();
+
+    return (lastIssueNumber ?? 0) + 1;
+}
+
+static async Task<IResult?> ValidateIssueRequestAsync(
+    string? title,
+    string? status,
+    Guid projectId,
+    Guid? ownerId,
+    AppDbContext dbContext)
+{
+    var normalizedStatus = NormalizeStatus(status);
+    var errors = new Dictionary<string, string[]>();
+
+    if (string.IsNullOrWhiteSpace(title))
+    {
+        errors[nameof(title)] = ["Title is required."];
+    }
+
+    if (!IssueStatusCatalog.All.Contains(normalizedStatus))
+    {
+        errors[nameof(status)] = ["Status does not exist."];
+    }
+
+    if (!await dbContext.Projects.AnyAsync(project => project.Id == projectId))
+    {
+        errors[nameof(projectId)] = ["Project does not exist."];
+    }
+
+    if (ownerId is not null &&
+        !await dbContext.Owners.AnyAsync(owner => owner.Id == ownerId))
+    {
+        errors[nameof(ownerId)] = ["Assignee does not exist."];
+    }
+
+    return errors.Count > 0 ? Results.ValidationProblem(errors) : null;
+}
+
+static string NormalizeStatus(string? status)
+{
+    var candidate = status?.Trim();
+
+    if (string.IsNullOrWhiteSpace(candidate))
+    {
+        return "Todo";
+    }
+
+    return IssueStatusCatalog.All.FirstOrDefault(
+        knownStatus => string.Equals(knownStatus, candidate, StringComparison.OrdinalIgnoreCase)) ?? candidate;
+}
+
+static bool IsCompletedStatus(string status) =>
+    string.Equals(status, "Done", StringComparison.OrdinalIgnoreCase);
+
 static string CreateInitials(string name)
 {
     var initials = string.Concat(name
@@ -294,6 +518,28 @@ static string CreateInitials(string name)
 
 public sealed record CreateOwnerRequest(string? Name);
 public sealed record OwnerResponse(Guid Id, string Name, string Initials, DateTime CreatedAtUtc);
-public sealed record CreateTodoRequest(string? Title, string? Section, DateOnly? DueDate, bool IsCompleted, Guid? OwnerId);
-public sealed record UpdateTodoRequest(string? Title, string? Section, DateOnly? DueDate, bool IsCompleted, Guid? OwnerId);
-public sealed record UpdateTodoStatusRequest(bool IsCompleted);
+public sealed record CreateProjectRequest(string? Name, string? Description);
+public sealed record UpdateProjectRequest(string? Name, string? Description);
+public sealed record ProjectResponse(Guid Id, string Name, string Description, int IssueCount, int DoneIssueCount, DateTime CreatedAtUtc);
+public sealed record ProjectDetailResponse(Guid Id, string Name, string Description, int IssueCount, int DoneIssueCount, DateTime CreatedAtUtc, List<IssueResponse> Issues);
+public sealed record CreateIssueRequest(string? Title, string? Description, string? Status, Guid ProjectId, Guid? OwnerId);
+public sealed record UpdateIssueRequest(string? Title, string? Description, string? Status, Guid ProjectId, Guid? OwnerId);
+public sealed record UpdateIssueStatusRequest(string? Status);
+public sealed record IssueResponse(
+    Guid Id,
+    int IssueNumber,
+    string Code,
+    string Title,
+    string Description,
+    string Status,
+    bool IsCompleted,
+    Guid ProjectId,
+    string ProjectName,
+    Guid? OwnerId,
+    OwnerResponse? Owner,
+    DateTime CreatedAtUtc);
+
+public static class IssueStatusCatalog
+{
+    public static readonly string[] All = ["Backlog", "Todo", "In Progress", "Done"];
+}
