@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
 import {
   CheckCircle2,
   Circle,
@@ -6,6 +7,7 @@ import {
   FolderKanban,
   Inbox,
   Link2,
+  LogOut,
   Loader2,
   PanelRight,
   Plus,
@@ -69,6 +71,17 @@ type Issue = {
   ownerId: string | null;
   owner: Owner | null;
   createdAtUtc: string;
+};
+
+type AuthenticatedUser = {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl: string;
+  ownerId: string | null;
+  isActive: boolean;
+  createdAtUtc: string;
+  lastLoginAtUtc: string;
 };
 
 type Route =
@@ -142,6 +155,14 @@ const getRoutePath = (route: Route) => {
   return "/";
 };
 
+const getAuthRedirectError = () => {
+  const params = new URLSearchParams(window.location.search);
+  const description = params.get("error_description");
+  const error = params.get("error");
+
+  return description || error;
+};
+
 const getStatusIcon = (status: IssueStatus, className?: string) => {
   const iconClassName = cn("size-4", className);
 
@@ -177,7 +198,16 @@ const getStatusTone = (status: IssueStatus) => {
 };
 
 function App() {
+  const {
+    getAccessTokenSilently,
+    isAuthenticated,
+    isLoading: isAuthLoading,
+    loginWithRedirect,
+    logout,
+    user: auth0User,
+  } = useAuth0();
   const [route, setRoute] = useState<Route>(() => parseRoute());
+  const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
   const [owners, setOwners] = useState<Owner[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -194,6 +224,20 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
 
+  const authenticatedFetch = useCallback(
+    async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const token = await getAccessTokenSilently();
+      const headers = new Headers(init.headers);
+      headers.set("Authorization", `Bearer ${token}`);
+
+      return fetch(input, {
+        ...init,
+        headers,
+      });
+    },
+    [getAccessTokenSilently],
+  );
+
   const navigate = (nextRoute: Route) => {
     window.history.pushState(null, "", getRoutePath(nextRoute));
     setRoute(nextRoute);
@@ -207,26 +251,37 @@ function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  const loadWorkspace = async () => {
+  const loadWorkspace = useCallback(async () => {
     try {
       setError(null);
 
-      const [ownersResponse, projectsResponse, issuesResponse] = await Promise.all([
-        fetch("/api/owners"),
-        fetch("/api/projects"),
-        fetch("/api/issues"),
+      const [meResponse, ownersResponse, projectsResponse, issuesResponse] = await Promise.all([
+        authenticatedFetch("/api/me", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: auth0User?.email ?? "",
+            name: auth0User?.name ?? auth0User?.nickname ?? "",
+            avatarUrl: auth0User?.picture ?? "",
+          }),
+        }),
+        authenticatedFetch("/api/owners"),
+        authenticatedFetch("/api/projects"),
+        authenticatedFetch("/api/issues"),
       ]);
 
-      if (!ownersResponse.ok || !projectsResponse.ok || !issuesResponse.ok) {
+      if (!meResponse.ok || !ownersResponse.ok || !projectsResponse.ok || !issuesResponse.ok) {
         throw new Error("Workspace request failed.");
       }
 
-      const [nextOwners, nextProjects, nextIssues] = (await Promise.all([
+      const [nextUser, nextOwners, nextProjects, nextIssues] = (await Promise.all([
+        meResponse.json(),
         ownersResponse.json(),
         projectsResponse.json(),
         issuesResponse.json(),
-      ])) as [Owner[], Project[], Issue[]];
+      ])) as [AuthenticatedUser, Owner[], Project[], Issue[]];
 
+      setCurrentUser(nextUser);
       setOwners(nextOwners);
       setProjects(nextProjects);
       setIssues(nextIssues);
@@ -240,11 +295,15 @@ function App() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [auth0User, authenticatedFetch]);
 
   useEffect(() => {
+    if (!isAuthenticated) {
+      return;
+    }
+
     void loadWorkspace();
-  }, []);
+  }, [isAuthenticated, loadWorkspace]);
 
   useEffect(() => {
     if (route.name !== "issue") {
@@ -263,7 +322,7 @@ function App() {
       try {
         setError(null);
 
-        const response = await fetch(`/api/issues/${route.id}`);
+        const response = await authenticatedFetch(`/api/issues/${route.id}`);
 
         if (!response.ok) {
           throw new Error("Issue request failed.");
@@ -278,7 +337,7 @@ function App() {
     };
 
     void loadIssue();
-  }, [issues, route]);
+  }, [authenticatedFetch, issues, route]);
 
   useEffect(() => {
     if (route.name !== "project") {
@@ -300,7 +359,7 @@ function App() {
       try {
         setError(null);
 
-        const response = await fetch(`/api/projects/${route.id}`);
+        const response = await authenticatedFetch(`/api/projects/${route.id}`);
 
         if (!response.ok) {
           throw new Error("Project request failed.");
@@ -319,7 +378,7 @@ function App() {
     };
 
     void loadProject();
-  }, [projects, route]);
+  }, [authenticatedFetch, projects, route]);
 
   const visibleIssues = useMemo(() => {
     if (route.name === "project") {
@@ -371,7 +430,7 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await fetch("/api/issues", {
+      const response = await authenticatedFetch("/api/issues", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(toIssuePayload(issueDraft)),
@@ -404,7 +463,7 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await fetch(`/api/issues/${selectedIssue.id}`, {
+      const response = await authenticatedFetch(`/api/issues/${selectedIssue.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(toIssuePayload(issueDraft)),
@@ -438,7 +497,7 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await fetch(`/api/issues/${selectedIssue.id}`, {
+      const response = await authenticatedFetch(`/api/issues/${selectedIssue.id}`, {
         method: "DELETE",
       });
 
@@ -469,7 +528,7 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await fetch("/api/projects", {
+      const response = await authenticatedFetch("/api/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(projectDraft),
@@ -502,7 +561,7 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await fetch(`/api/projects/${selectedProject.id}`, {
+      const response = await authenticatedFetch(`/api/projects/${selectedProject.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(projectDraft),
@@ -539,7 +598,7 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await fetch("/api/owners", {
+      const response = await authenticatedFetch("/api/owners", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name }),
@@ -582,6 +641,19 @@ function App() {
     }
   };
 
+  if (isAuthLoading) {
+    return <AuthLoadingScreen />;
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <AuthGate
+        authError={getAuthRedirectError()}
+        onLogin={() => void loginWithRedirect()}
+      />
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#08090a] text-zinc-100">
       <div className="flex min-h-screen">
@@ -592,7 +664,9 @@ function App() {
             </div>
             <div>
               <div className="text-sm font-semibold">Todo workspace</div>
-              <div className="text-xs text-zinc-500">One team</div>
+              <div className="text-xs text-zinc-500">
+                {currentUser?.email || "Authenticated"}
+              </div>
             </div>
           </div>
           <nav className="space-y-1">
@@ -647,6 +721,19 @@ function App() {
                 >
                   <UsersRound />
                   Assignee
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-8 rounded text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
+                  aria-label="Sign out"
+                  onClick={() =>
+                    logout({
+                      logoutParams: { returnTo: window.location.origin },
+                    })
+                  }
+                >
+                  <LogOut />
                 </Button>
                 <Button
                   size="sm"
@@ -794,6 +881,52 @@ function App() {
           </form>
         </DialogContent>
       </Dialog>
+    </main>
+  );
+}
+
+function AuthLoadingScreen() {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#08090a] text-zinc-100">
+      <div className="flex items-center gap-2 text-sm text-zinc-500">
+        <Loader2 className="animate-spin" />
+        Loading session
+      </div>
+    </main>
+  );
+}
+
+function AuthGate({
+  authError,
+  onLogin,
+}: {
+  authError: string | null;
+  onLogin: () => void;
+}) {
+  return (
+    <main className="grid min-h-screen place-items-center bg-[#08090a] px-5 text-zinc-100">
+      <section className="w-full max-w-sm rounded border border-zinc-900 bg-[#0c0d0e] p-5">
+        <div className="mb-5 flex items-center gap-3">
+          <div className="grid size-9 place-items-center rounded bg-emerald-500 text-sm font-black text-zinc-950">
+            T
+          </div>
+          <div>
+            <h1 className="text-base font-semibold">Todo workspace</h1>
+            <p className="text-sm text-zinc-500">Sign in to continue.</p>
+          </div>
+        </div>
+        {authError ? (
+          <Alert className="mb-4 border-red-950 bg-red-950/30 text-red-100">
+            <AlertDescription>{authError}</AlertDescription>
+          </Alert>
+        ) : null}
+        <Button
+          className="h-9 w-full rounded bg-zinc-100 text-zinc-950 hover:bg-white"
+          onClick={onLogin}
+        >
+          Continue with Google
+        </Button>
+      </section>
     </main>
   );
 }

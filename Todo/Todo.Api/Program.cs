@@ -1,5 +1,8 @@
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.IdentityModel.Tokens;
 using Todo.Domain.Entities;
 using Todo.Persistence;
 
@@ -7,6 +10,20 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        var domain = builder.Configuration["Auth0:Domain"] ?? "auth0.example.invalid";
+        var audience = builder.Configuration["Auth0:Audience"] ?? "missing-auth0-audience";
+
+        options.Authority = $"https://{domain.TrimEnd('/')}/";
+        options.Audience = audience;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            NameClaimType = "name"
+        };
+    });
+builder.Services.AddAuthorization();
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("frontend", policy =>
@@ -49,16 +66,40 @@ if (Directory.Exists(frontendDistPath))
 }
 
 app.UseCors("frontend");
+app.UseAuthentication();
+app.UseAuthorization();
 
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }))
+    .AllowAnonymous();
 
-app.MapGet("/api/owners", async (AppDbContext dbContext) =>
+var api = app.MapGroup("/api")
+    .RequireAuthorization();
+
+api.MapGet("/me", async (ClaimsPrincipal principal, AppDbContext dbContext) =>
+{
+    var user = await UpsertCurrentUserAsync(principal, dbContext, null);
+
+    return user.IsActive
+        ? Results.Ok(ToUserResponse(user))
+        : Results.Forbid();
+});
+
+api.MapPost("/me", async (SyncCurrentUserRequest request, ClaimsPrincipal principal, AppDbContext dbContext) =>
+{
+    var user = await UpsertCurrentUserAsync(principal, dbContext, request);
+
+    return user.IsActive
+        ? Results.Ok(ToUserResponse(user))
+        : Results.Forbid();
+});
+
+api.MapGet("/owners", async (AppDbContext dbContext) =>
     await dbContext.Owners
         .OrderBy(owner => owner.Name)
         .Select(owner => new OwnerResponse(owner.Id, owner.Name, owner.Initials, owner.CreatedAtUtc))
         .ToListAsync());
 
-app.MapPost("/api/owners", async (CreateOwnerRequest request, AppDbContext dbContext) =>
+api.MapPost("/owners", async (CreateOwnerRequest request, AppDbContext dbContext) =>
 {
     var name = request.Name?.Trim();
 
@@ -95,7 +136,7 @@ app.MapPost("/api/owners", async (CreateOwnerRequest request, AppDbContext dbCon
     return Results.Created($"/api/owners/{owner.Id}", ToOwnerResponse(owner));
 });
 
-app.MapGet("/api/projects", async (AppDbContext dbContext) =>
+api.MapGet("/projects", async (AppDbContext dbContext) =>
 {
     var projects = await dbContext.Projects
         .Include(project => project.TodoItems)
@@ -105,7 +146,7 @@ app.MapGet("/api/projects", async (AppDbContext dbContext) =>
     return projects.Select(ToProjectResponse).ToList();
 });
 
-app.MapGet("/api/projects/{id:guid}", async (Guid id, AppDbContext dbContext) =>
+api.MapGet("/projects/{id:guid}", async (Guid id, AppDbContext dbContext) =>
 {
     var project = await dbContext.Projects
         .Include(project => project.TodoItems)
@@ -117,7 +158,7 @@ app.MapGet("/api/projects/{id:guid}", async (Guid id, AppDbContext dbContext) =>
         : Results.Ok(ToProjectDetailResponse(project));
 });
 
-app.MapPost("/api/projects", async (CreateProjectRequest request, AppDbContext dbContext) =>
+api.MapPost("/projects", async (CreateProjectRequest request, AppDbContext dbContext) =>
 {
     var name = request.Name?.Trim();
 
@@ -142,7 +183,7 @@ app.MapPost("/api/projects", async (CreateProjectRequest request, AppDbContext d
     return Results.Created($"/api/projects/{project.Id}", ToProjectResponse(project));
 });
 
-app.MapPut("/api/projects/{id:guid}", async (Guid id, UpdateProjectRequest request, AppDbContext dbContext) =>
+api.MapPut("/projects/{id:guid}", async (Guid id, UpdateProjectRequest request, AppDbContext dbContext) =>
 {
     var project = await dbContext.Projects.FindAsync(id);
 
@@ -168,7 +209,7 @@ app.MapPut("/api/projects/{id:guid}", async (Guid id, UpdateProjectRequest reque
     return Results.Ok(ToProjectResponse(project));
 });
 
-app.MapGet("/api/issues", async (Guid? projectId, AppDbContext dbContext) =>
+api.MapGet("/issues", async (Guid? projectId, AppDbContext dbContext) =>
 {
     var query = dbContext.TodoItems
         .Include(issue => issue.Owner)
@@ -187,7 +228,7 @@ app.MapGet("/api/issues", async (Guid? projectId, AppDbContext dbContext) =>
     return issues.Select(ToIssueResponse).ToList();
 });
 
-app.MapGet("/api/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
+api.MapGet("/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
 {
     var issue = await dbContext.TodoItems
         .Include(issue => issue.Owner)
@@ -199,7 +240,7 @@ app.MapGet("/api/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
         : Results.Ok(ToIssueResponse(issue));
 });
 
-app.MapPost("/api/issues", async (CreateIssueRequest request, AppDbContext dbContext) =>
+api.MapPost("/issues", async (CreateIssueRequest request, AppDbContext dbContext) =>
 {
     var validation = await ValidateIssueRequestAsync(request.Title, request.Status, request.ProjectId, request.OwnerId, dbContext);
 
@@ -230,7 +271,7 @@ app.MapPost("/api/issues", async (CreateIssueRequest request, AppDbContext dbCon
     return Results.Created($"/api/issues/{issue.Id}", ToIssueResponse(createdIssue!));
 });
 
-app.MapPut("/api/issues/{id:guid}", async (Guid id, UpdateIssueRequest request, AppDbContext dbContext) =>
+api.MapPut("/issues/{id:guid}", async (Guid id, UpdateIssueRequest request, AppDbContext dbContext) =>
 {
     var issue = await dbContext.TodoItems.FindAsync(id);
 
@@ -261,7 +302,7 @@ app.MapPut("/api/issues/{id:guid}", async (Guid id, UpdateIssueRequest request, 
     return Results.Ok(ToIssueResponse(updatedIssue!));
 });
 
-app.MapPatch("/api/issues/{id:guid}/status", async (Guid id, UpdateIssueStatusRequest request, AppDbContext dbContext) =>
+api.MapPatch("/issues/{id:guid}/status", async (Guid id, UpdateIssueStatusRequest request, AppDbContext dbContext) =>
 {
     var issue = await dbContext.TodoItems.FindAsync(id);
 
@@ -289,7 +330,7 @@ app.MapPatch("/api/issues/{id:guid}/status", async (Guid id, UpdateIssueStatusRe
     return Results.Ok(ToIssueResponse(updatedIssue!));
 });
 
-app.MapDelete("/api/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
+api.MapDelete("/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
 {
     var issue = await dbContext.TodoItems.FindAsync(id);
 
@@ -305,7 +346,7 @@ app.MapDelete("/api/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =
 });
 
 // Backwards-compatible aliases while the app finishes moving away from "todos".
-app.MapGet("/api/todos", async (AppDbContext dbContext) =>
+api.MapGet("/todos", async (AppDbContext dbContext) =>
 {
     var issues = await dbContext.TodoItems
         .Include(issue => issue.Owner)
@@ -386,6 +427,108 @@ static async Task SeedDataAsync(AppDbContext dbContext)
         await dbContext.SaveChangesAsync();
     }
 }
+
+static async Task<User> UpsertCurrentUserAsync(
+    ClaimsPrincipal principal,
+    AppDbContext dbContext,
+    SyncCurrentUserRequest? profile)
+{
+    var auth0Subject = principal.FindFirstValue(ClaimTypes.NameIdentifier)
+        ?? principal.FindFirstValue("sub");
+
+    if (string.IsNullOrWhiteSpace(auth0Subject))
+    {
+        throw new InvalidOperationException("Authenticated request is missing the subject claim.");
+    }
+
+    var emailClaim = profile?.Email?.Trim();
+    emailClaim = string.IsNullOrWhiteSpace(emailClaim)
+        ? principal.FindFirstValue(ClaimTypes.Email)
+            ?? principal.FindFirstValue("email")
+        : emailClaim;
+    var nameClaim = profile?.Name?.Trim();
+    nameClaim = string.IsNullOrWhiteSpace(nameClaim)
+        ? principal.FindFirstValue("name")
+            ?? principal.FindFirstValue("nickname")
+        : nameClaim;
+    var avatarClaim = profile?.AvatarUrl?.Trim();
+    avatarClaim = string.IsNullOrWhiteSpace(avatarClaim)
+        ? principal.FindFirstValue("picture")
+        : avatarClaim;
+
+    var email = emailClaim is null ? string.Empty : emailClaim;
+    var name = nameClaim
+        ?? (string.IsNullOrWhiteSpace(email) ? "Authenticated user" : email);
+    var avatarUrl = avatarClaim ?? string.Empty;
+
+    var user = await dbContext.Users
+        .Include(currentUser => currentUser.Owner)
+        .FirstOrDefaultAsync(currentUser => currentUser.Auth0Subject == auth0Subject);
+
+    if (user is null)
+    {
+        user = new User
+        {
+            Id = Guid.NewGuid(),
+            Auth0Subject = auth0Subject,
+            Email = email,
+            Name = name,
+            AvatarUrl = avatarUrl,
+            LastLoginAtUtc = DateTime.UtcNow
+        };
+
+        dbContext.Users.Add(user);
+    }
+    else
+    {
+        user.Email = email;
+        user.Name = name;
+        user.AvatarUrl = avatarUrl;
+        user.LastLoginAtUtc = DateTime.UtcNow;
+    }
+
+    if (user.Owner is null)
+    {
+        var ownerName = await CreateUniqueOwnerNameAsync(name, dbContext);
+        dbContext.Owners.Add(new Owner
+        {
+            Id = Guid.NewGuid(),
+            User = user,
+            Name = ownerName,
+            Initials = CreateInitials(ownerName)
+        });
+    }
+
+    await dbContext.SaveChangesAsync();
+
+    return user;
+}
+
+static async Task<string> CreateUniqueOwnerNameAsync(string name, AppDbContext dbContext)
+{
+    var baseName = string.IsNullOrWhiteSpace(name) ? "User" : name.Trim();
+    var candidate = baseName;
+    var suffix = 2;
+
+    while (await dbContext.Owners.AnyAsync(owner => owner.Name.ToLower() == candidate.ToLower()))
+    {
+        candidate = $"{baseName} {suffix}";
+        suffix++;
+    }
+
+    return candidate;
+}
+
+static UserResponse ToUserResponse(User user) =>
+    new(
+        user.Id,
+        user.Email,
+        user.Name,
+        user.AvatarUrl,
+        user.Owner?.Id,
+        user.IsActive,
+        user.CreatedAtUtc,
+        user.LastLoginAtUtc);
 
 static OwnerResponse ToOwnerResponse(Owner owner) =>
     new(owner.Id, owner.Name, owner.Initials, owner.CreatedAtUtc);
@@ -517,6 +660,16 @@ static string CreateInitials(string name)
 }
 
 public sealed record CreateOwnerRequest(string? Name);
+public sealed record SyncCurrentUserRequest(string? Email, string? Name, string? AvatarUrl);
+public sealed record UserResponse(
+    Guid Id,
+    string Email,
+    string Name,
+    string AvatarUrl,
+    Guid? OwnerId,
+    bool IsActive,
+    DateTime CreatedAtUtc,
+    DateTime LastLoginAtUtc);
 public sealed record OwnerResponse(Guid Id, string Name, string Initials, DateTime CreatedAtUtc);
 public sealed record CreateProjectRequest(string? Name, string? Description);
 public sealed record UpdateProjectRequest(string? Name, string? Description);

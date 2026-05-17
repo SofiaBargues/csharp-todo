@@ -5,12 +5,42 @@ namespace Todo.Persistence;
 
 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
+    public DbSet<User> Users => Set<User>();
     public DbSet<Owner> Owners => Set<Owner>();
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<TodoItem> TodoItems => Set<TodoItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<User>(entity =>
+        {
+            entity.ToTable("Users");
+
+            entity.HasKey(user => user.Id);
+
+            entity.Property(user => user.Auth0Subject)
+                .HasMaxLength(200)
+                .IsRequired();
+            entity.Property(user => user.Email)
+                .HasMaxLength(320)
+                .HasDefaultValue(string.Empty);
+            entity.Property(user => user.Name)
+                .HasMaxLength(160)
+                .HasDefaultValue(string.Empty);
+            entity.Property(user => user.AvatarUrl)
+                .HasMaxLength(1000)
+                .HasDefaultValue(string.Empty);
+            entity.Property(user => user.IsActive)
+                .HasDefaultValue(true);
+            entity.Property(user => user.CreatedAtUtc)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(user => user.LastLoginAtUtc)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP");
+
+            entity.HasIndex(user => user.Auth0Subject)
+                .IsUnique();
+        });
+
         modelBuilder.Entity<Owner>(entity =>
         {
             entity.ToTable("Owners");
@@ -25,8 +55,16 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
                 .IsRequired();
             entity.Property(owner => owner.CreatedAtUtc)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
+            entity.Property(owner => owner.UserId);
+
+            entity.HasOne(owner => owner.User)
+                .WithOne(user => user.Owner)
+                .HasForeignKey<Owner>(owner => owner.UserId)
+                .OnDelete(DeleteBehavior.SetNull);
 
             entity.HasIndex(owner => owner.Name)
+                .IsUnique();
+            entity.HasIndex(owner => owner.UserId)
                 .IsUnique();
         });
 
