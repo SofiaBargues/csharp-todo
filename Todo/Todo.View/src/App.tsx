@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 import { useAuth0 } from "@auth0/auth0-react";
 import {
+  Check,
   CheckCircle2,
   Circle,
   CircleDashed,
@@ -11,7 +20,7 @@ import {
   Loader2,
   PanelRight,
   Plus,
-  Search,
+  Send,
   Trash2,
   UserRound,
   UsersRound,
@@ -29,6 +38,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -91,6 +108,7 @@ type Route =
   | { name: "project"; id: string };
 
 type IssueStatus = "Backlog" | "Todo" | "In Progress" | "Done";
+type IssueFilter = "all" | "active" | "backlog";
 
 type IssueDraft = {
   title: string;
@@ -106,6 +124,12 @@ type ProjectDraft = {
 };
 
 const issueStatuses: IssueStatus[] = ["Backlog", "Todo", "In Progress", "Done"];
+const activeIssueStatuses: IssueStatus[] = ["In Progress", "Todo"];
+const issueFilterOptions: { value: IssueFilter; label: string }[] = [
+  { value: "all", label: "All issues" },
+  { value: "active", label: "Active" },
+  { value: "backlog", label: "Backlog" },
+];
 const unassignedValue = "unassigned";
 
 const emptyIssueDraft: IssueDraft = {
@@ -207,22 +231,26 @@ function App() {
     user: auth0User,
   } = useAuth0();
   const [route, setRoute] = useState<Route>(() => parseRoute());
-  const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
+  const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(
+    null,
+  );
   const [owners, setOwners] = useState<Owner[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [issueDraft, setIssueDraft] = useState<IssueDraft>(emptyIssueDraft);
-  const [projectDraft, setProjectDraft] = useState<ProjectDraft>(emptyProjectDraft);
-  const [newOwnerName, setNewOwnerName] = useState("");
+  const [projectDraft, setProjectDraft] =
+    useState<ProjectDraft>(emptyProjectDraft);
   const [isCreatingIssue, setIsCreatingIssue] = useState(false);
   const [isCreatingProject, setIsCreatingProject] = useState(false);
-  const [isCreatingOwner, setIsCreatingOwner] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [issueFilter, setIssueFilter] = useState<IssueFilter>("active");
   const [error, setError] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const autoSaveTimeoutRef = useRef<number | null>(null);
+  const immediateSaveKeyRef = useRef<string | null>(null);
 
   const authenticatedFetch = useCallback(
     async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -255,31 +283,38 @@ function App() {
     try {
       setError(null);
 
-      const [meResponse, ownersResponse, projectsResponse, issuesResponse] = await Promise.all([
-        authenticatedFetch("/api/me", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: auth0User?.email ?? "",
-            name: auth0User?.name ?? auth0User?.nickname ?? "",
-            avatarUrl: auth0User?.picture ?? "",
-          }),
+      const meResponse = await authenticatedFetch("/api/me", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: auth0User?.email ?? "",
+          name: auth0User?.name ?? auth0User?.nickname ?? "",
+          avatarUrl: auth0User?.picture ?? "",
         }),
-        authenticatedFetch("/api/owners"),
-        authenticatedFetch("/api/projects"),
-        authenticatedFetch("/api/issues"),
-      ]);
+      });
 
-      if (!meResponse.ok || !ownersResponse.ok || !projectsResponse.ok || !issuesResponse.ok) {
+      if (!meResponse.ok) {
+        throw new Error("Current user request failed.");
+      }
+
+      const nextUser = (await meResponse.json()) as AuthenticatedUser;
+
+      const [ownersResponse, projectsResponse, issuesResponse] =
+        await Promise.all([
+          authenticatedFetch("/api/owners"),
+          authenticatedFetch("/api/projects"),
+          authenticatedFetch("/api/issues"),
+        ]);
+
+      if (!ownersResponse.ok || !projectsResponse.ok || !issuesResponse.ok) {
         throw new Error("Workspace request failed.");
       }
 
-      const [nextUser, nextOwners, nextProjects, nextIssues] = (await Promise.all([
-        meResponse.json(),
+      const [nextOwners, nextProjects, nextIssues] = (await Promise.all([
         ownersResponse.json(),
         projectsResponse.json(),
         issuesResponse.json(),
-      ])) as [AuthenticatedUser, Owner[], Project[], Issue[]];
+      ])) as [Owner[], Project[], Issue[]];
 
       setCurrentUser(nextUser);
       setOwners(nextOwners);
@@ -365,13 +400,17 @@ function App() {
           throw new Error("Project request failed.");
         }
 
-        const project = (await response.json()) as Project & { issues: Issue[] };
+        const project = (await response.json()) as Project & {
+          issues: Issue[];
+        };
         setSelectedProject(project);
         setProjectDraft({
           name: project.name,
           description: project.description,
         });
-        setIssues((currentIssues) => mergeIssues(currentIssues, project.issues));
+        setIssues((currentIssues) =>
+          mergeIssues(currentIssues, project.issues),
+        );
       } catch {
         setError("Could not load this project.");
       }
@@ -388,23 +427,44 @@ function App() {
     return issues;
   }, [issues, route]);
 
+  const filteredIssueStatuses = useMemo(() => {
+    if (issueFilter === "active") {
+      return activeIssueStatuses;
+    }
+
+    if (issueFilter === "backlog") {
+      return ["Backlog"] satisfies IssueStatus[];
+    }
+
+    return ["In Progress", "Todo", "Backlog", "Done"] satisfies IssueStatus[];
+  }, [issueFilter]);
+
   const groupedIssues = useMemo(
     () =>
-      issueStatuses.map((status) => ({
+      filteredIssueStatuses.map((status) => ({
         status,
         issues: visibleIssues.filter((issue) => issue.status === status),
       })),
-    [visibleIssues],
+    [filteredIssueStatuses, visibleIssues],
   );
 
   const currentTitle =
     route.name === "projects"
       ? "Projects"
       : route.name === "project"
-        ? selectedProject?.name ?? "Project"
+        ? (selectedProject?.name ?? "Project")
         : route.name === "issue"
-          ? selectedIssue?.code ?? "Issue"
+          ? (selectedIssue?.code ?? "Issue")
           : "Issues";
+  const parentTitle =
+    route.name === "project"
+      ? "Projects"
+      : route.name === "issue"
+        ? "Issues"
+        : "Todo";
+  const parentRoute: Route =
+    route.name === "project" ? { name: "projects" } : { name: "issues" };
+  const hasParentRoute = route.name === "project" || route.name === "issue";
 
   const canSaveIssue = Boolean(issueDraft.title.trim() && issueDraft.projectId);
   const canSaveProject = Boolean(projectDraft.name.trim());
@@ -452,21 +512,14 @@ function App() {
     }
   };
 
-  const handleUpdateIssue = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    if (!selectedIssue || !canSaveIssue) {
-      return;
-    }
-
-    try {
-      setIsSubmitting(true);
+  const saveIssueDraft = useCallback(
+    async (issue: Issue, draft: IssueDraft) => {
       setError(null);
 
-      const response = await authenticatedFetch(`/api/issues/${selectedIssue.id}`, {
+      const response = await authenticatedFetch(`/api/issues/${issue.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(toIssuePayload(issueDraft)),
+        body: JSON.stringify(toIssuePayload(draft)),
       });
 
       if (!response.ok) {
@@ -481,12 +534,101 @@ function App() {
         ),
       );
       await loadWorkspace();
-    } catch {
-      setError("Could not save the issue.");
-    } finally {
-      setIsSubmitting(false);
+    },
+    [authenticatedFetch, loadWorkspace],
+  );
+
+  const handleIssueDraftChange = (
+    nextDraft: IssueDraft,
+    saveImmediately = false,
+  ) => {
+    setIssueDraft(nextDraft);
+
+    if (
+      !saveImmediately ||
+      route.name !== "issue" ||
+      !selectedIssue ||
+      !nextDraft.title.trim() ||
+      !nextDraft.projectId ||
+      isSameIssueDraft(selectedIssue, nextDraft)
+    ) {
+      return;
     }
+
+    if (autoSaveTimeoutRef.current) {
+      window.clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    immediateSaveKeyRef.current = getIssueDraftKey(nextDraft);
+
+    void saveIssueDraft(selectedIssue, nextDraft).catch(() => {
+      immediateSaveKeyRef.current = null;
+      setError("Could not save the issue.");
+    });
   };
+
+  const handleAssignIssueOwner = (issue: Issue, ownerId: string) => {
+    if ((issue.ownerId ?? "") === ownerId) {
+      return;
+    }
+
+    const owner = owners.find((candidate) => candidate.id === ownerId) ?? null;
+    const nextDraft = {
+      ...toIssueDraft(issue),
+      ownerId,
+    };
+    const nextIssue = {
+      ...issue,
+      ownerId: owner?.id ?? null,
+      owner,
+    };
+
+    setIssues((currentIssues) =>
+      currentIssues.map((currentIssue) =>
+        currentIssue.id === issue.id ? nextIssue : currentIssue,
+      ),
+    );
+
+    if (selectedIssue?.id === issue.id) {
+      setSelectedIssue(nextIssue);
+      setIssueDraft(nextDraft);
+    }
+
+    void saveIssueDraft(issue, nextDraft).catch(() => {
+      setError("Could not save the assignee.");
+      void loadWorkspace();
+    });
+  };
+
+  useEffect(() => {
+    if (route.name !== "issue" || !selectedIssue || !canSaveIssue) {
+      return;
+    }
+
+    if (isSameIssueDraft(selectedIssue, issueDraft)) {
+      return;
+    }
+
+    if (immediateSaveKeyRef.current === getIssueDraftKey(issueDraft)) {
+      return;
+    }
+
+    if (autoSaveTimeoutRef.current) {
+      window.clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    autoSaveTimeoutRef.current = window.setTimeout(() => {
+      void saveIssueDraft(selectedIssue, issueDraft).catch(() => {
+        setError("Could not save the issue.");
+      });
+    }, 500);
+
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        window.clearTimeout(autoSaveTimeoutRef.current);
+      }
+    };
+  }, [canSaveIssue, issueDraft, route.name, saveIssueDraft, selectedIssue]);
 
   const handleDeleteIssue = async () => {
     if (!selectedIssue || !window.confirm("Delete this issue?")) {
@@ -497,9 +639,12 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await authenticatedFetch(`/api/issues/${selectedIssue.id}`, {
-        method: "DELETE",
-      });
+      const response = await authenticatedFetch(
+        `/api/issues/${selectedIssue.id}`,
+        {
+          method: "DELETE",
+        },
+      );
 
       if (!response.ok) {
         throw new Error("Delete issue request failed.");
@@ -561,11 +706,14 @@ function App() {
       setIsSubmitting(true);
       setError(null);
 
-      const response = await authenticatedFetch(`/api/projects/${selectedProject.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(projectDraft),
-      });
+      const response = await authenticatedFetch(
+        `/api/projects/${selectedProject.id}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(projectDraft),
+        },
+      );
 
       if (!response.ok) {
         throw new Error("Update project request failed.");
@@ -580,46 +728,6 @@ function App() {
       );
     } catch {
       setError("Could not save the project.");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleCreateOwner = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    const name = newOwnerName.trim();
-
-    if (!name) {
-      return;
-    }
-
-    try {
-      setIsSubmitting(true);
-      setError(null);
-
-      const response = await authenticatedFetch("/api/owners", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
-
-      if (!response.ok && response.status !== 409) {
-        throw new Error("Create assignee request failed.");
-      }
-
-      const data = await response.json();
-      const owner = (data.owner ?? data) as Owner;
-      setOwners((currentOwners) =>
-        currentOwners.some((currentOwner) => currentOwner.id === owner.id)
-          ? currentOwners
-          : [...currentOwners, owner],
-      );
-      setIssueDraft((currentDraft) => ({ ...currentDraft, ownerId: owner.id }));
-      setNewOwnerName("");
-      setIsCreatingOwner(false);
-    } catch {
-      setError("Could not create the assignee.");
     } finally {
       setIsSubmitting(false);
     }
@@ -663,7 +771,7 @@ function App() {
               T
             </div>
             <div>
-              <div className="text-sm font-semibold">Todo workspace</div>
+              <div className="text-sm font-semibold">Devs Team</div>
               <div className="text-xs text-zinc-500">
                 {currentUser?.email || "Authenticated"}
               </div>
@@ -708,20 +816,23 @@ function App() {
           <header className="sticky top-0 z-10 border-b border-zinc-900 bg-[#0b0c0d]/95 backdrop-blur">
             <div className="flex min-h-14 items-center justify-between gap-3 px-4 md:px-6">
               <div className="flex min-w-0 items-center gap-3">
-                <div className="text-sm text-zinc-500">Todo</div>
-                <span className="text-zinc-700">/</span>
-                <h1 className="truncate text-sm font-semibold">{currentTitle}</h1>
+                {hasParentRoute ? (
+                  <>
+                    <button
+                      type="button"
+                      className="rounded text-sm text-zinc-500 hover:text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-700"
+                      onClick={() => navigate(parentRoute)}
+                    >
+                      {parentTitle}
+                    </button>
+                    <span className="text-zinc-700">/</span>
+                  </>
+                ) : null}
+                <h1 className="truncate text-sm font-semibold">
+                  {currentTitle}
+                </h1>
               </div>
               <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-8 rounded text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100"
-                  onClick={() => setIsCreatingOwner(true)}
-                >
-                  <UsersRound />
-                  Assignee
-                </Button>
                 <Button
                   size="icon"
                   variant="ghost"
@@ -748,7 +859,7 @@ function App() {
             </div>
           </header>
 
-          <div className="mx-auto max-w-6xl px-4 py-5 md:px-6">
+          <div className="">
             {error ? (
               <Alert className="mb-4 border-red-950 bg-red-950/30 text-red-100">
                 <AlertDescription>{error}</AlertDescription>
@@ -765,9 +876,15 @@ function App() {
             {!isLoading && route.name === "issues" ? (
               <IssuesBoard
                 groups={groupedIssues}
+                owners={owners}
+                issueFilter={issueFilter}
                 showProject
+                onIssueFilterChange={setIssueFilter}
                 onCreateIssue={openNewIssue}
-                onOpenIssue={(issue) => navigate({ name: "issue", id: issue.id })}
+                onAssignOwner={handleAssignIssueOwner}
+                onOpenIssue={(issue) =>
+                  navigate({ name: "issue", id: issue.id })
+                }
               />
             ) : null}
 
@@ -789,12 +906,18 @@ function App() {
                 project={selectedProject}
                 draft={projectDraft}
                 groupedIssues={groupedIssues}
+                owners={owners}
+                issueFilter={issueFilter}
                 isSubmitting={isSubmitting}
                 canSave={canSaveProject}
                 onDraftChange={setProjectDraft}
                 onSubmit={handleUpdateProject}
+                onIssueFilterChange={setIssueFilter}
                 onCreateIssue={(status) => openNewIssue(status, route.id)}
-                onOpenIssue={(issue) => navigate({ name: "issue", id: issue.id })}
+                onAssignOwner={handleAssignIssueOwner}
+                onOpenIssue={(issue) =>
+                  navigate({ name: "issue", id: issue.id })
+                }
               />
             ) : null}
 
@@ -805,10 +928,8 @@ function App() {
                 projects={projects}
                 owners={owners}
                 isSubmitting={isSubmitting}
-                canSave={canSaveIssue}
                 copiedUrl={copiedUrl}
-                onDraftChange={setIssueDraft}
-                onSubmit={handleUpdateIssue}
+                onDraftChange={handleIssueDraftChange}
                 onDelete={handleDeleteIssue}
                 onCopyUrl={handleCopyIssueUrl}
                 onOpenProject={(projectId) =>
@@ -848,37 +969,6 @@ function App() {
             onDraftChange={setProjectDraft}
             onSubmit={handleCreateProject}
           />
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={isCreatingOwner} onOpenChange={setIsCreatingOwner}>
-        <DialogContent className="border-zinc-800 bg-[#171819] text-zinc-100">
-          <form onSubmit={handleCreateOwner}>
-            <DialogHeader>
-              <DialogTitle>New assignee</DialogTitle>
-              <DialogDescription className="text-zinc-500">
-                Add a person who can own issues.
-              </DialogDescription>
-            </DialogHeader>
-            <Input
-              className="mt-4 border-zinc-800 bg-zinc-950 text-zinc-100"
-              value={newOwnerName}
-              onChange={(event) => setNewOwnerName(event.target.value)}
-              placeholder="Name"
-              disabled={isSubmitting}
-              autoFocus
-            />
-            <DialogFooter className="mt-5">
-              <Button
-                type="submit"
-                className="rounded bg-zinc-100 text-zinc-950 hover:bg-white"
-                disabled={isSubmitting || !newOwnerName.trim()}
-              >
-                {isSubmitting ? <Loader2 className="animate-spin" /> : null}
-                Create assignee
-              </Button>
-            </DialogFooter>
-          </form>
         </DialogContent>
       </Dialog>
     </main>
@@ -963,23 +1053,68 @@ function NavButton({
 
 function IssuesBoard({
   groups,
+  owners,
+  issueFilter,
   showProject,
+  onIssueFilterChange,
   onCreateIssue,
+  onAssignOwner,
   onOpenIssue,
 }: {
   groups: { status: IssueStatus; issues: Issue[] }[];
+  owners: Owner[];
+  issueFilter: IssueFilter;
   showProject: boolean;
+  onIssueFilterChange: (filter: IssueFilter) => void;
   onCreateIssue: (status: IssueStatus) => void;
+  onAssignOwner: (issue: Issue, ownerId: string) => void;
   onOpenIssue: (issue: Issue) => void;
 }) {
+  const assigneeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    for (const group of groups) {
+      for (const issue of group.issues) {
+        const ownerId = issue.ownerId ?? "";
+        counts.set(ownerId, (counts.get(ownerId) ?? 0) + 1);
+      }
+    }
+
+    return counts;
+  }, [groups]);
+
   return (
     <div className="overflow-hidden rounded border border-zinc-900 bg-[#0c0d0e]">
-      <div className="flex items-center justify-between border-b border-zinc-900 px-3 py-2">
-        <div className="flex items-center gap-2 text-xs text-zinc-500">
-          <Search className="size-4" />
-          Grouped by status
+      <div className="flex items-center justify-between gap-3 border-b border-zinc-900 px-3 py-2">
+        <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto">
+          {issueFilterOptions.map((option) => {
+            const isSelected = issueFilter === option.value;
+
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={cn(
+                  "h-7 shrink-0 rounded-full border px-3 text-xs font-medium transition",
+                  isSelected
+                    ? "border-zinc-700 bg-zinc-800 text-zinc-50"
+                    : "border-zinc-800 bg-[#111213] text-zinc-400 hover:border-zinc-700 hover:text-zinc-100",
+                )}
+                onClick={() => onIssueFilterChange(option.value)}
+              >
+                {option.label}
+              </button>
+            );
+          })}
         </div>
-        <PanelRight className="size-4 text-zinc-600" />
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-7 shrink-0 rounded-full text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
+          aria-label="Toggle side panel"
+        >
+          <PanelRight className="size-4" />
+        </Button>
       </div>
 
       {groups.map(({ status, issues }) => (
@@ -1007,13 +1142,15 @@ function IssuesBoard({
               </div>
             ) : (
               issues.map((issue) => (
-                <button
+                <div
                   key={issue.id}
-                  type="button"
                   className="grid w-full grid-cols-1 gap-2 border-b border-zinc-900 px-4 py-3 text-left hover:bg-zinc-900/50 md:grid-cols-[1fr_auto]"
-                  onClick={() => onOpenIssue(issue)}
                 >
-                  <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    className="flex min-w-0 items-center gap-2 text-left"
+                    onClick={() => onOpenIssue(issue)}
+                  >
                     {getStatusIcon(issue.status, "shrink-0")}
                     <span className="shrink-0 text-xs font-medium text-zinc-500">
                       {issue.code}
@@ -1029,17 +1166,97 @@ function IssuesBoard({
                         {issue.projectName}
                       </Badge>
                     ) : null}
-                  </div>
+                  </button>
                   <div className="flex items-center gap-2 md:justify-end">
-                    <AssigneeAvatar owner={issue.owner} />
+                    <QuickAssigneeMenu
+                      issue={issue}
+                      owners={owners}
+                      assigneeCounts={assigneeCounts}
+                      onAssignOwner={onAssignOwner}
+                    />
                   </div>
-                </button>
+                </div>
               ))
             )}
           </div>
         </section>
       ))}
     </div>
+  );
+}
+
+function QuickAssigneeMenu({
+  issue,
+  owners,
+  assigneeCounts,
+  onAssignOwner,
+}: {
+  issue: Issue;
+  owners: Owner[];
+  assigneeCounts: Map<string, number>;
+  onAssignOwner: (issue: Issue, ownerId: string) => void;
+}) {
+  const selectedOwnerId = issue.ownerId ?? "";
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-8 rounded-full p-0 hover:bg-zinc-800"
+          aria-label={`Assign owner for ${issue.code}`}
+        >
+          <AssigneeAvatar owner={issue.owner} />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        className="w-52 rounded-lg border-zinc-800 bg-[#202123] p-1 text-zinc-100 shadow-xl"
+      >
+        <DropdownMenuItem
+          className="flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-sm font-semibold focus:bg-zinc-700"
+          onSelect={() => onAssignOwner(issue, "")}
+        >
+          <UsersRound className="size-4 text-zinc-300" />
+          <span className="min-w-0 flex-1 truncate">No assignee</span>
+          {selectedOwnerId === "" ? <Check className="size-4" /> : null}
+          <span className="text-xs text-zinc-500">
+            {assigneeCounts.get("") ?? 0}
+          </span>
+        </DropdownMenuItem>
+        {owners.map((owner) => (
+          <DropdownMenuItem
+            key={owner.id}
+            className="flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-sm font-semibold focus:bg-zinc-700"
+            onSelect={() => onAssignOwner(issue, owner.id)}
+          >
+            <Avatar className="size-4 border border-zinc-700">
+              <AvatarFallback className="bg-yellow-400 text-[8px] font-bold text-zinc-950">
+                {owner.initials}
+              </AvatarFallback>
+            </Avatar>
+            <span className="min-w-0 flex-1 truncate">{owner.name}</span>
+            {selectedOwnerId === owner.id ? <Check className="size-4" /> : null}
+            <span className="text-xs text-zinc-500">
+              {assigneeCounts.get(owner.id) ?? 0}
+            </span>
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator className="mx-2 bg-zinc-700/70" />
+        <DropdownMenuLabel className="px-2 py-1 text-xs font-medium text-zinc-400">
+          New user
+        </DropdownMenuLabel>
+        <DropdownMenuItem
+          disabled
+          className="flex h-8 items-center gap-2 rounded-md px-2 text-sm font-semibold text-zinc-400 opacity-70"
+        >
+          <Send className="size-4" />
+          <span className="min-w-0 flex-1 truncate">Invite and assign...</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -1100,21 +1317,29 @@ function ProjectPage({
   project,
   draft,
   groupedIssues,
+  owners,
+  issueFilter,
   isSubmitting,
   canSave,
   onDraftChange,
   onSubmit,
+  onIssueFilterChange,
   onCreateIssue,
+  onAssignOwner,
   onOpenIssue,
 }: {
   project: Project | null;
   draft: ProjectDraft;
   groupedIssues: { status: IssueStatus; issues: Issue[] }[];
+  owners: Owner[];
+  issueFilter: IssueFilter;
   isSubmitting: boolean;
   canSave: boolean;
   onDraftChange: (draft: ProjectDraft) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onIssueFilterChange: (filter: IssueFilter) => void;
   onCreateIssue: (status: IssueStatus) => void;
+  onAssignOwner: (issue: Issue, ownerId: string) => void;
   onOpenIssue: (issue: Issue) => void;
 }) {
   if (!project) {
@@ -1161,8 +1386,12 @@ function ProjectPage({
       </form>
       <IssuesBoard
         groups={groupedIssues}
+        owners={owners}
+        issueFilter={issueFilter}
         showProject={false}
+        onIssueFilterChange={onIssueFilterChange}
         onCreateIssue={onCreateIssue}
+        onAssignOwner={onAssignOwner}
         onOpenIssue={onOpenIssue}
       />
     </div>
@@ -1175,10 +1404,8 @@ function IssuePage({
   projects,
   owners,
   isSubmitting,
-  canSave,
   copiedUrl,
   onDraftChange,
-  onSubmit,
   onDelete,
   onCopyUrl,
   onOpenProject,
@@ -1188,10 +1415,8 @@ function IssuePage({
   projects: Project[];
   owners: Owner[];
   isSubmitting: boolean;
-  canSave: boolean;
   copiedUrl: boolean;
-  onDraftChange: (draft: IssueDraft) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onDraftChange: (draft: IssueDraft, saveImmediately?: boolean) => void;
   onDelete: () => void;
   onCopyUrl: () => void;
   onOpenProject: (projectId: string) => void;
@@ -1201,10 +1426,7 @@ function IssuePage({
   }
 
   return (
-    <form
-      className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]"
-      onSubmit={onSubmit}
-    >
+    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
       <section className="min-w-0 rounded border border-zinc-900 bg-[#0c0d0e] p-5">
         <div className="mb-4 flex items-center gap-2 text-xs text-zinc-500">
           <span>{issue.projectName}</span>
@@ -1235,7 +1457,10 @@ function IssuePage({
           <div className="mb-3 flex items-center justify-between">
             <Badge
               variant="outline"
-              className={cn("gap-2 rounded border px-2 py-1", getStatusTone(draft.status))}
+              className={cn(
+                "gap-2 rounded border px-2 py-1",
+                getStatusTone(draft.status),
+              )}
             >
               {getStatusIcon(draft.status)}
               {draft.status}
@@ -1260,7 +1485,7 @@ function IssuePage({
             <Select
               value={draft.status}
               onValueChange={(value) =>
-                onDraftChange({ ...draft, status: value as IssueStatus })
+                onDraftChange({ ...draft, status: value as IssueStatus }, true)
               }
               disabled={isSubmitting}
             >
@@ -1286,14 +1511,14 @@ function IssuePage({
               value={draft.ownerId}
               owners={owners}
               disabled={isSubmitting}
-              onChange={(ownerId) => onDraftChange({ ...draft, ownerId })}
+              onChange={(ownerId) => onDraftChange({ ...draft, ownerId }, true)}
             />
           </FieldLabel>
           <FieldLabel label="Project">
             <Select
               value={draft.projectId}
               onValueChange={(projectId) =>
-                onDraftChange({ ...draft, projectId })
+                onDraftChange({ ...draft, projectId }, true)
               }
               disabled={isSubmitting}
             >
@@ -1333,16 +1558,8 @@ function IssuePage({
             Delete issue
           </Button>
         </div>
-        <Button
-          type="submit"
-          className="h-9 w-full rounded bg-zinc-100 text-zinc-950 hover:bg-white"
-          disabled={isSubmitting || !canSave}
-        >
-          {isSubmitting ? <Loader2 className="animate-spin" /> : null}
-          Save changes
-        </Button>
       </aside>
-    </form>
+    </div>
   );
 }
 
@@ -1611,6 +1828,22 @@ function toIssuePayload(draft: IssueDraft) {
     projectId: draft.projectId,
     ownerId: draft.ownerId || null,
   };
+}
+
+function isSameIssueDraft(issue: Issue, draft: IssueDraft) {
+  const payload = toIssuePayload(draft);
+
+  return (
+    issue.title === payload.title &&
+    issue.description === payload.description &&
+    issue.status === payload.status &&
+    issue.projectId === payload.projectId &&
+    issue.ownerId === payload.ownerId
+  );
+}
+
+function getIssueDraftKey(draft: IssueDraft) {
+  return JSON.stringify(toIssuePayload(draft));
 }
 
 function mergeIssues(currentIssues: Issue[], nextIssues: Issue[]) {

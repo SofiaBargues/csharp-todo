@@ -6,6 +6,8 @@ using Microsoft.IdentityModel.Tokens;
 using Todo.Domain.Entities;
 using Todo.Persistence;
 
+const string TeamName = "Devs Team";
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddEndpointsApiExplorer();
@@ -95,46 +97,10 @@ api.MapPost("/me", async (SyncCurrentUserRequest request, ClaimsPrincipal princi
 
 api.MapGet("/owners", async (AppDbContext dbContext) =>
     await dbContext.Owners
+        .Where(owner => owner.UserId != null)
         .OrderBy(owner => owner.Name)
         .Select(owner => new OwnerResponse(owner.Id, owner.Name, owner.Initials, owner.CreatedAtUtc))
         .ToListAsync());
-
-api.MapPost("/owners", async (CreateOwnerRequest request, AppDbContext dbContext) =>
-{
-    var name = request.Name?.Trim();
-
-    if (string.IsNullOrWhiteSpace(name))
-    {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            [nameof(request.Name)] = ["Assignee name is required."]
-        });
-    }
-
-    var existingOwner = await dbContext.Owners
-        .FirstOrDefaultAsync(owner => owner.Name.ToLower() == name.ToLower());
-
-    if (existingOwner is not null)
-    {
-        return Results.Conflict(new
-        {
-            message = "Assignee already exists.",
-            owner = ToOwnerResponse(existingOwner)
-        });
-    }
-
-    var owner = new Owner
-    {
-        Id = Guid.NewGuid(),
-        Name = name,
-        Initials = CreateInitials(name)
-    };
-
-    dbContext.Owners.Add(owner);
-    await dbContext.SaveChangesAsync();
-
-    return Results.Created($"/api/owners/{owner.Id}", ToOwnerResponse(owner));
-});
 
 api.MapGet("/projects", async (AppDbContext dbContext) =>
 {
@@ -225,7 +191,7 @@ api.MapGet("/issues", async (Guid? projectId, AppDbContext dbContext) =>
         .OrderBy(issue => issue.IssueNumber)
         .ToListAsync();
 
-    return issues.Select(ToIssueResponse).ToList();
+    return issues.Select(issue => ToIssueResponse(issue)).ToList();
 });
 
 api.MapGet("/issues/{id:guid}", async (Guid id, AppDbContext dbContext) =>
@@ -354,7 +320,7 @@ api.MapGet("/todos", async (AppDbContext dbContext) =>
         .OrderBy(issue => issue.IssueNumber)
         .ToListAsync();
 
-    return issues.Select(ToIssueResponse).ToList();
+    return issues.Select(issue => ToIssueResponse(issue)).ToList();
 });
 
 if (Directory.Exists(frontendDistPath))
@@ -370,20 +336,9 @@ app.Run();
 
 static async Task SeedDataAsync(AppDbContext dbContext)
 {
-    var defaultOwner = await dbContext.Owners.FirstOrDefaultAsync();
-
-    if (defaultOwner is null)
-    {
-        defaultOwner = new Owner
-        {
-            Id = Guid.NewGuid(),
-            Name = "Sofia Bargues",
-            Initials = "SOF"
-        };
-
-        dbContext.Owners.Add(defaultOwner);
-        await dbContext.SaveChangesAsync();
-    }
+    var defaultOwner = await dbContext.Owners
+        .Where(owner => owner.UserId != null)
+        .FirstOrDefaultAsync();
 
     var defaultProject = await dbContext.Projects.FirstOrDefaultAsync();
 
@@ -411,7 +366,7 @@ static async Task SeedDataAsync(AppDbContext dbContext)
                 Description = "Create the first workspace project and keep the issue list grouped by status.",
                 Status = "In Progress",
                 ProjectId = defaultProject.Id,
-                OwnerId = defaultOwner.Id
+                OwnerId = defaultOwner?.Id
             },
             new TodoItem
             {
@@ -421,7 +376,7 @@ static async Task SeedDataAsync(AppDbContext dbContext)
                 Description = "Open an issue on its own route so the URL can be shared.",
                 Status = "Todo",
                 ProjectId = defaultProject.Id,
-                OwnerId = defaultOwner.Id
+                OwnerId = defaultOwner?.Id
             });
 
         await dbContext.SaveChangesAsync();
@@ -557,22 +512,15 @@ static ProjectDetailResponse ToProjectDetailResponse(Project project) =>
         project.CreatedAtUtc,
         project.TodoItems
             .OrderBy(issue => issue.IssueNumber)
-            .Select(ToIssueResponse)
+            .Select(issue => ToIssueResponse(issue))
             .ToList());
 
 static IssueResponse ToIssueResponse(TodoItem issue)
 {
-    var codePrefix = issue.Owner?.Initials;
-
-    if (string.IsNullOrWhiteSpace(codePrefix))
-    {
-        codePrefix = "ISS";
-    }
-
     return new IssueResponse(
         issue.Id,
         issue.IssueNumber,
-        $"{codePrefix}-{issue.IssueNumber}",
+        CreateIssueCode(issue.IssueNumber),
         issue.Title,
         issue.Description,
         issue.Status,
@@ -597,6 +545,21 @@ static async Task<int> GetNextIssueNumberAsync(AppDbContext dbContext)
         .MaxAsync();
 
     return (lastIssueNumber ?? 0) + 1;
+}
+
+static string CreateIssueCode(int issueNumber) =>
+    $"{CreateTeamCodePrefix(TeamName)}-{issueNumber}";
+
+static string CreateTeamCodePrefix(string teamName)
+{
+    var letters = new string(teamName
+        .Where(char.IsLetterOrDigit)
+        .Take(3)
+        .ToArray());
+
+    return string.IsNullOrWhiteSpace(letters)
+        ? "ISS"
+        : letters.ToUpperInvariant();
 }
 
 static async Task<IResult?> ValidateIssueRequestAsync(
@@ -625,7 +588,7 @@ static async Task<IResult?> ValidateIssueRequestAsync(
     }
 
     if (ownerId is not null &&
-        !await dbContext.Owners.AnyAsync(owner => owner.Id == ownerId))
+        !await dbContext.Owners.AnyAsync(owner => owner.Id == ownerId && owner.UserId != null))
     {
         errors[nameof(ownerId)] = ["Assignee does not exist."];
     }
@@ -659,7 +622,6 @@ static string CreateInitials(string name)
     return initials.Length > 0 ? initials[..Math.Min(initials.Length, 4)] : "OWN";
 }
 
-public sealed record CreateOwnerRequest(string? Name);
 public sealed record SyncCurrentUserRequest(string? Email, string? Name, string? AvatarUrl);
 public sealed record UserResponse(
     Guid Id,
