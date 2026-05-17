@@ -2,11 +2,9 @@ import {
   useEffect,
   useMemo,
   useState,
-  type ChangeEvent,
   type FormEvent,
 } from "react";
 import {
-  Bell,
   CalendarDays,
   ChevronDown,
   ChevronRight,
@@ -15,21 +13,56 @@ import {
   CircleDashed,
   Layers3,
   Loader2,
-  Maximize2,
   MoreHorizontal,
   Paperclip,
   Pencil,
   Plus,
-  Star,
   Tag,
   UserPlus,
   UsersRound,
   X,
 } from "lucide-react";
 
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Select } from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 type EditState = {
@@ -65,6 +98,14 @@ type ViewFilter = {
   value?: string;
 };
 
+type IssueStatus = {
+  value: string;
+  label: string;
+  section: string;
+  isCompleted: boolean;
+  colorClass: string;
+};
+
 type NewIssueState = {
   isOpen: boolean;
   title: string;
@@ -72,7 +113,7 @@ type NewIssueState = {
   section: string;
   dueDate: string;
   ownerId: string;
-  status: "pending" | "completed";
+  status: string;
 };
 
 const baseViews: ViewFilter[] = [
@@ -82,16 +123,71 @@ const baseViews: ViewFilter[] = [
 ];
 
 const customViewsKey = "todo.customViews";
-const groupOrder = ["In Progress", "Todo", "Backlog", "Done"];
+const unassignedOwnerValue = "unassigned";
+const issueStatuses: IssueStatus[] = [
+  {
+    value: "backlog",
+    label: "Backlog",
+    section: "Backlog",
+    isCompleted: false,
+    colorClass: "text-zinc-400",
+  },
+  {
+    value: "todo",
+    label: "Todo",
+    section: "Todo",
+    isCompleted: false,
+    colorClass: "text-zinc-300",
+  },
+  {
+    value: "in-progress",
+    label: "In Progress",
+    section: "In Progress",
+    isCompleted: false,
+    colorClass: "text-yellow-400",
+  },
+  {
+    value: "in-review",
+    label: "In Review",
+    section: "In Review",
+    isCompleted: false,
+    colorClass: "text-emerald-400",
+  },
+  {
+    value: "done",
+    label: "Done",
+    section: "Done",
+    isCompleted: true,
+    colorClass: "text-indigo-400",
+  },
+  {
+    value: "canceled",
+    label: "Canceled",
+    section: "Canceled",
+    isCompleted: true,
+    colorClass: "text-zinc-500",
+  },
+  {
+    value: "duplicate",
+    label: "Duplicate",
+    section: "Duplicate",
+    isCompleted: true,
+    colorClass: "text-zinc-500",
+  },
+];
+const groupOrder = issueStatuses.map((status) => status.label);
+const defaultIssueStatus = issueStatuses.find(
+  (status) => status.value === "todo",
+)!;
 
 const emptyIssue: NewIssueState = {
   isOpen: false,
   title: "",
   description: "",
-  section: "Todo",
+  section: defaultIssueStatus.section,
   dueDate: "",
   ownerId: "",
-  status: "pending",
+  status: defaultIssueStatus.value,
 };
 
 const formatDueDate = (dueDate: string | null) => {
@@ -111,12 +207,61 @@ const formatDueDate = (dueDate: string | null) => {
   });
 };
 
+const toDateValue = (value: string) => {
+  if (!value) {
+    return undefined;
+  }
+
+  const date = new Date(`${value}T00:00:00`);
+
+  return Number.isNaN(date.getTime()) ? undefined : date;
+};
+
+const toInputDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+};
+
 const normalize = (value: string) => value.trim().toLowerCase();
 
 const getSectionLabel = (todo: TodoItem) => todo.section.trim() || "Todo";
 
+const findStatusByValue = (value: string) =>
+  issueStatuses.find((status) => status.value === value) ?? defaultIssueStatus;
+
+const findStatusByLabel = (label: string) =>
+  issueStatuses.find((status) => normalize(status.label) === normalize(label));
+
+const getStatusFromTodo = (todo: TodoItem) => {
+  const sectionStatus = findStatusByLabel(getSectionLabel(todo));
+
+  if (sectionStatus) {
+    return sectionStatus;
+  }
+
+  return todo.isCompleted
+    ? findStatusByValue("done")
+    : findStatusByValue("todo");
+};
+
+const getStatusFromDraft = (section: string, isCompleted: boolean) => {
+  const sectionStatus = findStatusByLabel(section);
+
+  if (sectionStatus) {
+    return sectionStatus;
+  }
+
+  return isCompleted ? findStatusByValue("done") : findStatusByValue("todo");
+};
+
+const isActiveStatus = (status: IssueStatus) =>
+  !["done", "canceled", "duplicate"].includes(status.value);
+
 const getGroupLabel = (todo: TodoItem) =>
-  todo.isCompleted ? "Done" : getSectionLabel(todo);
+  getStatusFromTodo(todo).label;
 
 const getDefaultSectionForView = (view: ViewFilter) => {
   if (view.kind === "section") {
@@ -126,23 +271,30 @@ const getDefaultSectionForView = (view: ViewFilter) => {
   return "Todo";
 };
 
-const getGroupIcon = (label: string) => {
-  const normalizedLabel = normalize(label);
+const getStatusIcon = (status: IssueStatus, className?: string) => {
+  const iconClassName = cn("size-4", status.colorClass, className);
 
-  if (normalizedLabel === "done") {
-    return <CheckCircle2 className="size-4 text-indigo-400" />;
+  if (status.value === "done") {
+    return <CheckCircle2 className={iconClassName} />;
   }
 
-  if (normalizedLabel === "backlog") {
-    return <CircleDashed className="size-4 text-zinc-400" />;
+  if (status.value === "backlog") {
+    return <CircleDashed className={iconClassName} />;
   }
 
-  if (normalizedLabel.includes("progress")) {
-    return <CircleDashed className="size-4 text-yellow-400" />;
+  if (status.value === "in-progress") {
+    return <CircleDashed className={iconClassName} />;
   }
 
-  return <Circle className="size-4 text-zinc-300" />;
+  if (status.value === "canceled" || status.value === "duplicate") {
+    return <X className={iconClassName} />;
+  }
+
+  return <Circle className={iconClassName} />;
 };
+
+const getGroupIcon = (label: string) =>
+  getStatusIcon(findStatusByLabel(label) ?? defaultIssueStatus);
 
 const sortGroups = (left: string, right: string) => {
   const leftIndex = groupOrder.findIndex(
@@ -161,6 +313,58 @@ const sortGroups = (left: string, right: string) => {
 
   return left.localeCompare(right);
 };
+
+type DatePickerFieldProps = {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+  ariaLabel: string;
+  disabled?: boolean;
+  className?: string;
+};
+
+function DatePickerField({
+  value,
+  onChange,
+  placeholder,
+  ariaLabel,
+  disabled,
+  className,
+}: DatePickerFieldProps) {
+  const selectedDate = toDateValue(value);
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className={cn(
+            "h-8 justify-start rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100 hover:bg-zinc-700 hover:text-zinc-100",
+            !selectedDate && "text-zinc-400",
+            className,
+          )}
+          aria-label={ariaLabel}
+          disabled={disabled}
+        >
+          <CalendarDays data-icon="inline-start" />
+          {selectedDate ? formatDueDate(value) : placeholder}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-auto border-zinc-800 bg-[#1a1b1d] p-0 text-zinc-100"
+      >
+        <Calendar
+          mode="single"
+          selected={selectedDate}
+          onSelect={(date) => onChange(date ? toInputDate(date) : "")}
+          disabled={disabled}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 function App() {
   const [owners, setOwners] = useState<Owner[]>([]);
@@ -194,7 +398,6 @@ function App() {
   });
   const [isAddingView, setIsAddingView] = useState(false);
   const [newViewName, setNewViewName] = useState("");
-  const [isOwnerMenuOpen, setIsOwnerMenuOpen] = useState(false);
   const [isAddingOwner, setIsAddingOwner] = useState(false);
   const [newOwnerName, setNewOwnerName] = useState("");
   const [newIssue, setNewIssue] = useState<NewIssueState>(emptyIssue);
@@ -277,7 +480,7 @@ function App() {
     }
 
     if (activeView.kind === "active") {
-      return !todo.isCompleted;
+      return isActiveStatus(getStatusFromTodo(todo));
     }
 
     if (activeView.kind === "section") {
@@ -363,6 +566,54 @@ function App() {
     }
   };
 
+  const handleUpdateTodoStatus = async (todo: TodoItem, statusValue: string) => {
+    const nextStatus = findStatusByValue(statusValue);
+
+    try {
+      setIsSubmitting(true);
+      setError(null);
+
+      const response = await fetch(`/api/todos/${todo.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: todo.title,
+          section: nextStatus.section,
+          dueDate: todo.dueDate,
+          isCompleted: nextStatus.isCompleted,
+          ownerId: todo.ownerId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error();
+      }
+
+      const updatedTodo = (await response.json()) as TodoItem;
+
+      setTodos((currentTodos) =>
+        currentTodos.map((currentTodo) =>
+          currentTodo.id === updatedTodo.id ? updatedTodo : currentTodo,
+        ),
+      );
+      setEditState((currentEditState) =>
+        currentEditState?.id === updatedTodo.id
+          ? {
+              ...currentEditState,
+              section: updatedTodo.section,
+              isCompleted: updatedTodo.isCompleted,
+            }
+          : currentEditState,
+      );
+    } catch {
+      setError("Could not update the task status.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleAddOwner = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -397,7 +648,6 @@ function App() {
           setSelectedOwnerId(existingOwner.id);
           setNewOwnerName("");
           setIsAddingOwner(false);
-          setIsOwnerMenuOpen(false);
           return;
         }
       }
@@ -411,7 +661,6 @@ function App() {
       setSelectedOwnerId(createdOwner.id);
       setNewOwnerName("");
       setIsAddingOwner(false);
-      setIsOwnerMenuOpen(false);
     } catch {
       setError("Could not save the owner.");
     } finally {
@@ -436,21 +685,20 @@ function App() {
   const openNewIssueModal = (groupLabel?: string) => {
     setEditState(null);
 
-    const normalizedGroup = normalize(groupLabel ?? "");
-    const isDoneGroup = normalizedGroup === "done";
-    const sectionLabel =
-      groupLabel && !isDoneGroup
-        ? groupLabel
-        : getDefaultSectionForView(activeView);
+    const groupStatus = groupLabel ? findStatusByLabel(groupLabel) : undefined;
+    const defaultStatus =
+      groupStatus ??
+      findStatusByLabel(getDefaultSectionForView(activeView)) ??
+      defaultIssueStatus;
 
     setNewIssue({
       isOpen: true,
       title: "",
       description: "",
-      section: sectionLabel,
+      section: defaultStatus.section,
       dueDate: selectedDueDate,
       ownerId: selectedOwnerId,
-      status: isDoneGroup ? "completed" : "pending",
+      status: defaultStatus.value,
     });
   };
 
@@ -507,7 +755,8 @@ function App() {
     event.preventDefault();
 
     const nextTitle = newIssue.title.trim();
-    const nextSection = newIssue.section.trim();
+    const nextStatus = findStatusByValue(newIssue.status);
+    const nextSection = newIssue.section.trim() || nextStatus.section;
 
     if (!nextTitle || !nextSection || !newIssue.dueDate) {
       return;
@@ -526,7 +775,7 @@ function App() {
           title: nextTitle,
           section: nextSection,
           dueDate: newIssue.dueDate,
-          isCompleted: newIssue.status === "completed",
+          isCompleted: nextStatus.isCompleted,
           ownerId: newIssue.ownerId || null,
         }),
       });
@@ -603,130 +852,122 @@ function App() {
     <main className="min-h-screen bg-[#0f1012] text-zinc-100">
       <header className="border-b border-zinc-900 bg-[#101113]">
         <div className="mx-auto flex h-11 w-full max-w-6xl items-center gap-3 px-3 sm:px-5">
-          <div className="relative">
-            <button
-              type="button"
-              className="inline-flex h-8 items-center gap-2 rounded-md px-2 text-sm font-semibold text-zinc-100 hover:bg-zinc-900"
-              onClick={() => setIsOwnerMenuOpen((isOpen) => !isOpen)}
-              disabled={isLoadingOwners}
-              aria-expanded={isOwnerMenuOpen}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-zinc-100 hover:bg-zinc-900 hover:text-zinc-100"
+                disabled={isLoadingOwners}
+              >
+                <Avatar className="size-6 rounded-md">
+                  <AvatarFallback className="rounded-md bg-emerald-500 text-[10px] font-black text-zinc-950">
+                    {activeOwner?.initials ?? "..."}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="max-w-36 truncate">
+                  {activeOwner?.name ?? "Loading"}
+                </span>
+                <ChevronDown data-icon="inline-end" className="text-zinc-500" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="w-72 border-zinc-800 bg-[#1a1b1d] text-zinc-100"
             >
-              <span className="inline-flex size-6 items-center justify-center rounded-md bg-emerald-500 text-[10px] font-black text-zinc-950">
-                {activeOwner?.initials ?? "..."}
-              </span>
-              <span className="max-w-36 truncate">
-                {activeOwner?.name ?? "Loading"}
-              </span>
-              <ChevronDown className="size-4 text-zinc-500" />
-            </button>
-
-            {isOwnerMenuOpen ? (
-              <div className="absolute left-0 top-10 z-40 w-72 overflow-hidden rounded-lg border border-zinc-800 bg-[#1a1b1d] shadow-2xl">
-                <div className="border-b border-zinc-800 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                  Owners
-                </div>
-                <div className="max-h-64 overflow-y-auto p-1">
+              <DropdownMenuLabel className="text-xs uppercase text-zinc-500">
+                Owners
+              </DropdownMenuLabel>
+              <ScrollArea className="max-h-64">
+                <DropdownMenuGroup>
                   {owners.map((owner) => (
-                    <button
+                    <DropdownMenuItem
                       key={owner.id}
-                      type="button"
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-zinc-800",
+                        "gap-2 focus:bg-zinc-800 focus:text-zinc-100",
                         owner.id === selectedOwnerId
                           ? "text-zinc-100"
                           : "text-zinc-400",
                       )}
-                      onClick={() => {
-                        setSelectedOwnerId(owner.id);
-                        setIsOwnerMenuOpen(false);
-                      }}
+                      onClick={() => setSelectedOwnerId(owner.id)}
                     >
-                      <span className="inline-flex size-7 items-center justify-center rounded-md bg-zinc-800 text-[10px] font-black text-emerald-300">
-                        {owner.initials}
-                      </span>
+                      <Avatar className="size-7 rounded-md">
+                        <AvatarFallback className="rounded-md bg-zinc-800 text-[10px] font-black text-emerald-300">
+                          {owner.initials}
+                        </AvatarFallback>
+                      </Avatar>
                       <span className="min-w-0 flex-1 truncate font-medium">
                         {owner.name}
                       </span>
                       {owner.id === selectedOwnerId ? (
-                        <CheckCircle2 className="size-4 text-emerald-400" />
+                        <CheckCircle2 className="text-emerald-400" />
                       ) : null}
-                    </button>
+                    </DropdownMenuItem>
                   ))}
-                </div>
+                </DropdownMenuGroup>
+              </ScrollArea>
 
-                <div className="border-t border-zinc-800 p-2">
-                  {isAddingOwner ? (
-                    <form className="flex items-center gap-2" onSubmit={handleAddOwner}>
-                      <Input
-                        className="h-8 border-zinc-700 bg-[#111113] text-sm text-zinc-100 placeholder:text-zinc-600"
-                        value={newOwnerName}
-                        onChange={(event) => setNewOwnerName(event.target.value)}
-                        placeholder="Owner name"
-                        autoFocus
-                        disabled={isSubmitting}
-                      />
-                      <Button
-                        type="submit"
-                        size="icon"
-                        className="size-8 bg-emerald-500 text-zinc-950 hover:bg-emerald-400"
-                        disabled={isSubmitting || !newOwnerName.trim()}
-                        aria-label="Save owner"
-                      >
-                        {isSubmitting ? (
-                          <Loader2 className="animate-spin" />
-                        ) : (
-                          <CheckCircle2 />
-                        )}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="size-8 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
-                        onClick={() => {
-                          setIsAddingOwner(false);
-                          setNewOwnerName("");
-                        }}
-                        disabled={isSubmitting}
-                        aria-label="Cancel owner"
-                      >
-                        <X />
-                      </Button>
-                    </form>
-                  ) : (
-                    <button
-                      type="button"
-                      className="flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-                      onClick={() => setIsAddingOwner(true)}
+              <DropdownMenuSeparator className="bg-zinc-800" />
+              <div className="p-1">
+                {isAddingOwner ? (
+                  <form className="flex items-center gap-2" onSubmit={handleAddOwner}>
+                    <Input
+                      className="h-8 border-zinc-700 bg-[#111113] text-sm text-zinc-100 placeholder:text-zinc-600"
+                      value={newOwnerName}
+                      onChange={(event) => setNewOwnerName(event.target.value)}
+                      placeholder="Owner name"
+                      autoFocus
+                      disabled={isSubmitting}
+                    />
+                    <Button
+                      type="submit"
+                      size="icon"
+                      className="size-8 bg-emerald-500 text-zinc-950 hover:bg-emerald-400"
+                      disabled={isSubmitting || !newOwnerName.trim()}
+                      aria-label="Save owner"
                     >
-                      <UserPlus className="size-4" />
-                      Add owner
-                    </button>
-                  )}
-                </div>
+                      {isSubmitting ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <CheckCircle2 />
+                      )}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      className="size-8 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
+                      onClick={() => {
+                        setIsAddingOwner(false);
+                        setNewOwnerName("");
+                      }}
+                      disabled={isSubmitting}
+                      aria-label="Cancel owner"
+                    >
+                      <X />
+                    </Button>
+                  </form>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                    onClick={() => setIsAddingOwner(true)}
+                  >
+                    <UserPlus data-icon="inline-start" />
+                    Add owner
+                  </Button>
+                )}
               </div>
-            ) : null}
-          </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <ChevronRight className="size-4 text-zinc-600" />
           <span className="text-sm font-semibold text-zinc-200">Issues</span>
           <ChevronRight className="size-4 text-zinc-600" />
           <span className="text-sm font-semibold text-zinc-200">Issues</span>
-
-          <button
-            type="button"
-            className="rounded-md p-1.5 text-zinc-500 hover:bg-zinc-900 hover:text-zinc-100"
-            aria-label="Favorite issues"
-          >
-            <Star className="size-4" />
-          </button>
-          <button
-            type="button"
-            className="ml-auto rounded-md p-1.5 text-zinc-500 hover:bg-zinc-900 hover:text-zinc-100"
-            aria-label="Notifications"
-          >
-            <Bell className="size-4" />
-          </button>
         </div>
       </header>
 
@@ -747,22 +988,26 @@ function App() {
                     : "border-zinc-800 bg-transparent text-zinc-400 hover:border-zinc-700 hover:text-zinc-100",
                 )}
               >
-                <button
+                <Button
                   type="button"
-                  className="h-full px-3"
+                  variant="ghost"
+                  size="sm"
+                  className="h-full rounded-none px-3 text-inherit hover:bg-transparent hover:text-inherit"
                   onClick={() => setActiveViewId(view.id)}
                 >
                   {view.label}
-                </button>
+                </Button>
                 {isCustomView ? (
-                  <button
+                  <Button
                     type="button"
-                    className="flex h-full w-7 items-center justify-center border-l border-zinc-800 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
+                    variant="ghost"
+                    size="icon"
+                    className="h-full w-7 rounded-none border-l border-zinc-800 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
                     aria-label={`Remove ${view.label} view`}
                     onClick={() => handleRemoveView(view.id)}
                   >
-                    <X className="size-3.5" />
-                  </button>
+                    <X />
+                  </Button>
                 ) : null}
               </div>
             );
@@ -774,97 +1019,101 @@ function App() {
               onSubmit={handleAddView}
             >
               <Layers3 className="size-4 text-zinc-500" />
-              <input
-                className="h-6 w-28 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-600"
+              <Input
+                className="h-6 w-28 border-0 bg-transparent px-0 text-sm text-zinc-100 shadow-none placeholder:text-zinc-600 focus-visible:ring-0"
                 value={newViewName}
                 onChange={(event) => setNewViewName(event.target.value)}
                 placeholder="New view"
                 autoFocus
               />
-              <button
+              <Button
                 type="submit"
-                className="text-zinc-500 hover:text-zinc-200 disabled:opacity-40"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
                 aria-label="Save new view"
                 disabled={!newViewName.trim()}
               >
-                <CheckCircle2 className="size-3.5" />
-              </button>
-              <button
+                <CheckCircle2 />
+              </Button>
+              <Button
                 type="button"
-                className="text-zinc-500 hover:text-zinc-200"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
                 aria-label="Cancel new view"
                 onClick={() => {
                   setIsAddingView(false);
                   setNewViewName("");
                 }}
               >
-                <X className="size-3.5" />
-              </button>
+                <X />
+              </Button>
             </form>
           ) : (
-            <button
+            <Button
               type="button"
-              className="inline-flex h-8 items-center gap-2 rounded-full border border-dashed border-zinc-800 px-3 text-sm font-medium text-zinc-500 transition-colors hover:border-zinc-700 hover:text-zinc-200"
+              variant="outline"
+              size="sm"
+              className="rounded-full border-dashed border-zinc-800 bg-transparent text-zinc-500 hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-200"
               onClick={() => setIsAddingView(true)}
             >
-              <Layers3 className="size-4" />
+              <Layers3 data-icon="inline-start" />
               New view
-              <Pencil className="size-3" />
-            </button>
+              <Pencil data-icon="inline-end" />
+            </Button>
           )}
 
-          <div className="ml-auto flex h-8 items-center gap-2 rounded-full border border-zinc-800 bg-[#111113] px-3 text-sm text-zinc-400">
-            <CalendarDays className="size-4" />
-            <input
-              type="date"
-              className="h-6 bg-transparent text-sm text-zinc-200 outline-none [color-scheme:dark]"
+          <div className="ml-auto flex items-center gap-1">
+            <DatePickerField
               value={selectedDueDate}
-              onChange={(event) => setSelectedDueDate(event.target.value)}
-              onInput={(event: FormEvent<HTMLInputElement>) =>
-                setSelectedDueDate(event.currentTarget.value)
-              }
-              aria-label="Filter by due date"
+              onChange={setSelectedDueDate}
+              placeholder="Due date"
+              ariaLabel="Filter by due date"
+              className="border-zinc-800 bg-[#111113] text-sm"
             />
             {selectedDueDate ? (
-              <button
+              <Button
                 type="button"
-                className="text-zinc-500 hover:text-zinc-100"
+                variant="ghost"
+                size="icon"
+                className="size-6 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
                 aria-label="Clear due date filter"
                 onClick={() => setSelectedDueDate("")}
               >
-                <X className="size-3.5" />
-              </button>
+                <X />
+              </Button>
             ) : null}
           </div>
         </div>
 
         {error ? (
-          <div className="mt-3 rounded-md border border-red-900/60 bg-red-950/40 p-4 text-sm font-medium text-red-200">
-            {error}
-          </div>
+          <Alert className="mt-3 border-red-900/60 bg-red-950/40 text-red-200">
+            <AlertDescription className="font-medium">{error}</AlertDescription>
+          </Alert>
         ) : null}
 
         {isLoading || isLoadingOwners ? (
-          <div className="mt-3 flex items-center gap-2 rounded-md border border-zinc-800 bg-[#171719] p-4 text-sm text-zinc-400">
-            <Loader2 className="size-4 animate-spin" />
-            Loading workspace...
-          </div>
+          <Alert className="mt-3 border-zinc-800 bg-[#171719] text-zinc-400">
+            <Loader2 className="animate-spin" />
+            <AlertDescription>Loading workspace...</AlertDescription>
+          </Alert>
         ) : null}
 
         {!isLoading && !isLoadingOwners && !error ? (
-          <div className="mt-3 space-y-2">
+          <div className="mt-3 flex flex-col gap-2">
             {filteredTodos.length === 0 ? (
-              <div className="flex flex-col items-center gap-3 rounded-md border border-dashed border-zinc-800 p-8 text-center text-sm text-zinc-500">
+              <Alert className="flex flex-col items-center gap-3 border-dashed border-zinc-800 bg-transparent p-8 text-center text-sm text-zinc-500">
                 <span>No tasks in this view.</span>
                 <Button
                   type="button"
                   className="h-8 rounded-full bg-indigo-500 px-4 text-xs font-semibold text-white hover:bg-indigo-400"
                   onClick={() => openNewIssueModal()}
                 >
-                  <Plus />
+                  <Plus data-icon="inline-start" />
                   Add issue
                 </Button>
-              </div>
+              </Alert>
             ) : null}
 
             {groupedTodos.map(([groupLabel, groupTodos]) => {
@@ -876,32 +1125,36 @@ function App() {
                   className="overflow-hidden rounded-md border border-zinc-900"
                 >
                   <header className="flex h-9 items-center justify-between bg-[#171719] px-3 text-sm">
-                    <button
+                    <Button
                       type="button"
-                      className="flex min-w-0 items-center gap-2 font-semibold text-zinc-200 hover:text-white"
+                      variant="ghost"
+                      size="sm"
+                      className="min-w-0 justify-start px-0 font-semibold text-zinc-200 hover:bg-transparent hover:text-white"
                       aria-expanded={!isCollapsed}
                       aria-label={`Toggle ${groupLabel}`}
                       onClick={() => toggleGroup(groupLabel)}
                     >
                       {isCollapsed ? (
-                        <ChevronRight className="size-4 text-zinc-600" />
+                        <ChevronRight className="text-zinc-600" />
                       ) : (
-                        <ChevronDown className="size-4 text-zinc-600" />
+                        <ChevronDown className="text-zinc-600" />
                       )}
                       {getGroupIcon(groupLabel)}
                       <span className="truncate">{groupLabel}</span>
                       <span className="font-normal text-zinc-500">
                         {groupTodos.length}
                       </span>
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
-                      className="text-zinc-500 hover:text-zinc-200"
+                      variant="ghost"
+                      size="icon"
+                      className="size-7 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
                       aria-label={`Add task to ${groupLabel}`}
                       onClick={() => openNewIssueModal(groupLabel)}
                     >
-                      <Plus className="size-4" />
-                    </button>
+                      <Plus />
+                    </Button>
                   </header>
 
                   <div
@@ -914,46 +1167,125 @@ function App() {
                       const sectionLabel = getSectionLabel(todo);
                       const dueDateLabel = formatDueDate(todo.dueDate);
                       const issueNumber = todo.id.slice(0, 4).toUpperCase();
+                      const todoStatus = getStatusFromTodo(todo);
                       const owner = todo.ownerId
                         ? ownerById.get(todo.ownerId)
                         : undefined;
 
                       return (
-                        <button
-                          type="button"
+                        <div
                           key={todo.id}
-                          className="block w-full px-3 py-3 text-left hover:bg-zinc-900/55 focus-visible:bg-zinc-900/70 focus-visible:outline-none"
-                          onClick={() => startEdit(todo)}
-                          disabled={isSubmitting}
+                          role="button"
+                          tabIndex={0}
+                          aria-disabled={isSubmitting}
+                          className={cn(
+                            "block w-full px-3 py-3 text-left hover:bg-zinc-900/55 focus-visible:bg-zinc-900/70 focus-visible:outline-none",
+                            isSubmitting && "pointer-events-none opacity-60",
+                          )}
+                          onClick={() => {
+                            if (!isSubmitting) {
+                              startEdit(todo);
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (
+                              !isSubmitting &&
+                              (event.key === "Enter" || event.key === " ")
+                            ) {
+                              event.preventDefault();
+                              startEdit(todo);
+                            }
+                          }}
                         >
                           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                             <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 text-sm">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-6 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100"
+                                    aria-label={`Change status for ${todo.title}`}
+                                    disabled={isSubmitting}
+                                    onClick={(event) => event.stopPropagation()}
+                                  >
+                                    {getStatusIcon(todoStatus)}
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                  align="start"
+                                  className="w-60 border-zinc-800 bg-[#1a1b1d] text-zinc-100"
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  <DropdownMenuLabel className="text-xs uppercase text-zinc-500">
+                                    Change status
+                                  </DropdownMenuLabel>
+                                  <DropdownMenuSeparator className="bg-zinc-800" />
+                                  <DropdownMenuGroup>
+                                    {issueStatuses.map((status, index) => (
+                                      <DropdownMenuItem
+                                        key={status.value}
+                                        className="gap-3 focus:bg-zinc-800 focus:text-zinc-100"
+                                        onClick={(event) =>
+                                          event.stopPropagation()
+                                        }
+                                        onSelect={() =>
+                                          void handleUpdateTodoStatus(
+                                            todo,
+                                            status.value,
+                                          )
+                                        }
+                                      >
+                                        {getStatusIcon(status)}
+                                        <span className="flex-1 font-medium">
+                                          {status.label}
+                                        </span>
+                                        {todoStatus.value === status.value ? (
+                                          <CheckCircle2 className="text-zinc-300" />
+                                        ) : (
+                                          <span className="text-xs text-zinc-500">
+                                            {index + 1}
+                                          </span>
+                                        )}
+                                      </DropdownMenuItem>
+                                    ))}
+                                  </DropdownMenuGroup>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                               <span className="font-medium text-zinc-500">
                                 SB-{issueNumber}
                               </span>
-                              {getGroupIcon(groupLabel)}
                               <h2 className="min-w-0 break-words font-semibold text-zinc-100">
                                 {todo.title}
                               </h2>
-                              <span className="rounded-sm border border-zinc-800 px-1.5 py-0.5 text-xs text-zinc-500">
+                              <Badge
+                                variant="outline"
+                                className="border-zinc-800 text-zinc-500"
+                              >
                                 {sectionLabel}
-                              </span>
+                              </Badge>
                             </div>
                             <div className="flex shrink-0 items-center justify-between gap-2 text-sm text-zinc-500 md:justify-end">
-                              <span className="inline-flex h-7 items-center gap-2 rounded-full border border-zinc-800 bg-[#111113] px-3 text-sm text-zinc-400">
-                                <CalendarDays className="size-4 text-orange-500" />
+                              <Badge
+                                variant="outline"
+                                className="h-7 gap-2 rounded-full border-zinc-800 bg-[#111113] px-3 text-sm text-zinc-400"
+                              >
+                                <CalendarDays className="text-orange-500" />
                                 {dueDateLabel}
-                              </span>
-                              <span
-                                className="inline-flex size-7 items-center justify-center rounded-full border border-zinc-800 bg-[#111113] text-[10px] font-black text-zinc-500"
+                              </Badge>
+                              <Avatar
+                                className="size-7 border border-zinc-800 bg-[#111113]"
                                 title={owner?.name ?? "Unassigned"}
                                 aria-label={owner?.name ?? "Unassigned"}
                               >
-                                {owner?.initials ?? <UsersRound className="size-4" />}
-                              </span>
+                                <AvatarFallback className="bg-[#111113] text-[10px] font-black text-zinc-500">
+                                  {owner?.initials ?? <UsersRound />}
+                                </AvatarFallback>
+                              </Avatar>
                             </div>
                           </div>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -964,43 +1296,37 @@ function App() {
         ) : null}
       </section>
 
-      {newIssue.isOpen ? (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-3 py-5 sm:py-8">
+      <Dialog
+        open={newIssue.isOpen}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            closeNewIssueModal();
+          }
+        }}
+      >
+        <DialogContent className="top-8 max-w-3xl translate-y-0 overflow-hidden border-zinc-700 bg-[#1d1d1f] p-0 text-zinc-100 sm:top-8 sm:rounded-lg">
           <form
-            className="flex min-h-[16rem] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-[#1d1d1f] shadow-2xl"
+            className="flex min-h-[16rem] w-full flex-col"
             onSubmit={handleCreateIssue}
           >
             <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
-                <span className="rounded-full bg-zinc-800 px-2 py-1 text-xs text-emerald-300">
+                <Badge className="rounded-full bg-zinc-800 px-2 py-1 text-xs text-emerald-300">
                   {newIssueOwner?.initials ?? <UsersRound className="inline size-3" />}
-                </span>
+                </Badge>
                 <ChevronRight className="size-4 text-zinc-500" />
-                <span>New issue</span>
-              </div>
-              <div className="flex items-center gap-1 text-zinc-500">
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 hover:bg-zinc-800 hover:text-zinc-100"
-                  aria-label="Expand issue modal"
-                >
-                  <Maximize2 className="size-4" />
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 hover:bg-zinc-800 hover:text-zinc-100"
-                  aria-label="Close new issue"
-                  onClick={closeNewIssueModal}
-                  disabled={isSubmitting}
-                >
-                  <X className="size-4" />
-                </button>
+                <DialogHeader className="gap-0">
+                  <DialogTitle className="text-sm">New issue</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    Create a new todo issue.
+                  </DialogDescription>
+                </DialogHeader>
               </div>
             </div>
 
             <div className="flex flex-1 flex-col gap-4 px-5 py-5">
-              <input
-                className="w-full bg-transparent text-xl font-semibold text-zinc-100 outline-none placeholder:text-zinc-500"
+              <Input
+                className="h-auto border-0 bg-transparent px-0 py-0 text-xl font-semibold text-zinc-100 shadow-none placeholder:text-zinc-500 focus-visible:ring-0"
                 value={newIssue.title}
                 onChange={(event) =>
                   setNewIssue((currentIssue) => ({
@@ -1012,8 +1338,8 @@ function App() {
                 autoFocus
                 disabled={isSubmitting}
               />
-              <textarea
-                className="min-h-20 w-full resize-none bg-transparent text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
+              <Textarea
+                className="min-h-20 resize-none border-0 bg-transparent px-0 py-0 text-sm text-zinc-200 shadow-none placeholder:text-zinc-600 focus-visible:ring-0"
                 value={newIssue.description}
                 onChange={(event) =>
                   setNewIssue((currentIssue) => ({
@@ -1027,22 +1353,38 @@ function App() {
 
               <div className="flex flex-wrap items-center gap-2">
                 <Select
-                  className="h-8 w-auto rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
                   value={newIssue.status}
-                  onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                    setNewIssue((currentIssue) => ({
-                      ...currentIssue,
-                      status:
-                        event.target.value === "completed"
-                          ? "completed"
-                          : "pending",
-                    }))
+                  onValueChange={(value) =>
+                    setNewIssue((currentIssue) => {
+                      const nextStatus = findStatusByValue(value);
+
+                      return {
+                        ...currentIssue,
+                        section: nextStatus.section,
+                        status: nextStatus.value,
+                      };
+                    })
                   }
-                  aria-label="Issue status"
                   disabled={isSubmitting}
                 >
-                  <option value="pending">In Progress</option>
-                  <option value="completed">Done</option>
+                  <SelectTrigger
+                    aria-label="Issue status"
+                    className="h-8 w-auto rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="border-zinc-800 bg-[#1a1b1d] text-zinc-100">
+                    <SelectGroup>
+                      {issueStatuses.map((status) => (
+                        <SelectItem key={status.value} value={status.value}>
+                          <span className="flex items-center gap-2">
+                            {getStatusIcon(status)}
+                            {status.label}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
                 </Select>
                 <Input
                   className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100 placeholder:text-zinc-500"
@@ -1056,73 +1398,83 @@ function App() {
                   placeholder="Section"
                   disabled={isSubmitting}
                 />
-                <Input
-                  className="h-8 w-40 rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
-                  type="date"
+                <DatePickerField
                   value={newIssue.dueDate}
-                  onChange={(event) =>
+                  onChange={(value) =>
                     setNewIssue((currentIssue) => ({
                       ...currentIssue,
-                      dueDate: event.target.value,
+                      dueDate: value,
                     }))
                   }
-                  aria-label="Issue due date"
+                  placeholder="Due date"
+                  ariaLabel="Issue due date"
                   disabled={isSubmitting}
                 />
-                <div className="relative">
-                  <UsersRound className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-400" />
-                  <Select
-                    className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 py-1 pl-8 pr-3 text-xs font-semibold text-zinc-100"
-                    value={newIssue.ownerId}
-                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                      setNewIssue((currentIssue) => ({
-                        ...currentIssue,
-                        ownerId: event.target.value,
-                      }))
-                    }
-                    aria-label="Issue owner"
-                    disabled={isSubmitting}
-                  >
-                    <option value="">Unassigned</option>
-                    {owners.map((owner) => (
-                      <option key={owner.id} value={owner.id}>
-                        {owner.name}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-3 text-xs font-semibold text-zinc-400"
+                <Select
+                  value={newIssue.ownerId || unassignedOwnerValue}
+                  onValueChange={(value) =>
+                    setNewIssue((currentIssue) => ({
+                      ...currentIssue,
+                      ownerId: value === unassignedOwnerValue ? "" : value,
+                    }))
+                  }
+                  disabled={isSubmitting}
                 >
-                  <Tag className="size-3.5" />
-                  Labels
-                </button>
-                <button
+                  <SelectTrigger
+                    aria-label="Issue owner"
+                    className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 py-1 pl-3 pr-3 text-xs font-semibold text-zinc-100"
+                  >
+                    <UsersRound data-icon="inline-start" className="text-zinc-400" />
+                    <SelectValue placeholder="Unassigned" />
+                  </SelectTrigger>
+                  <SelectContent className="border-zinc-800 bg-[#1a1b1d] text-zinc-100">
+                    <SelectGroup>
+                      <SelectItem value={unassignedOwnerValue}>
+                        Unassigned
+                      </SelectItem>
+                      {owners.map((owner) => (
+                        <SelectItem key={owner.id} value={owner.id}>
+                          {owner.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Button
                   type="button"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-zinc-400"
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full border-zinc-700 bg-zinc-800 text-xs font-semibold text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
+                >
+                  <Tag data-icon="inline-start" />
+                  Labels
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="size-8 rounded-full border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
                   aria-label="More issue options"
                 >
-                  <MoreHorizontal className="size-4" />
-                </button>
+                  <MoreHorizontal />
+                </Button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between border-t border-zinc-800 px-5 py-3">
-              <button
+            <Separator className="bg-zinc-800" />
+            <DialogFooter className="flex-row items-center justify-between px-5 py-3 sm:justify-between">
+              <Button
                 type="button"
-                className="inline-flex size-8 items-center justify-center rounded-full bg-zinc-800 text-zinc-400 hover:text-zinc-100"
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-full bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
                 aria-label="Attach file"
               >
-                <Paperclip className="size-4" />
-              </button>
+                <Paperclip />
+              </Button>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-2 text-xs text-zinc-500">
-                  <input
-                    type="checkbox"
-                    className="size-4 accent-indigo-500"
-                    disabled
-                  />
+                  <Checkbox disabled />
                   Create more
                 </label>
                 <Button
@@ -1134,48 +1486,43 @@ function App() {
                   Create issue
                 </Button>
               </div>
-            </div>
+            </DialogFooter>
           </form>
-        </div>
-      ) : null}
+        </DialogContent>
+      </Dialog>
 
-      {editState ? (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-3 py-5 sm:py-8">
+      <Dialog
+        open={Boolean(editState)}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            cancelEdit();
+          }
+        }}
+      >
+        <DialogContent className="top-8 max-w-3xl translate-y-0 overflow-hidden border-zinc-700 bg-[#1d1d1f] p-0 text-zinc-100 sm:top-8 sm:rounded-lg">
+          {editState ? (
           <form
-            className="flex min-h-[16rem] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-[#1d1d1f] shadow-2xl"
+            className="flex min-h-[16rem] w-full flex-col"
             onSubmit={handleEditSubmit}
           >
             <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2 text-sm font-semibold">
-                <span className="rounded-full bg-zinc-800 px-2 py-1 text-xs text-emerald-300">
+                <Badge className="rounded-full bg-zinc-800 px-2 py-1 text-xs text-emerald-300">
                   {editIssueOwner?.initials ?? <UsersRound className="inline size-3" />}
-                </span>
+                </Badge>
                 <ChevronRight className="size-4 text-zinc-500" />
-                <span>Edit issue</span>
-              </div>
-              <div className="flex items-center gap-1 text-zinc-500">
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 hover:bg-zinc-800 hover:text-zinc-100"
-                  aria-label="Expand edit modal"
-                >
-                  <Maximize2 className="size-4" />
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md p-1.5 hover:bg-zinc-800 hover:text-zinc-100"
-                  aria-label="Close edit issue"
-                  onClick={cancelEdit}
-                  disabled={isSubmitting}
-                >
-                  <X className="size-4" />
-                </button>
+                <DialogHeader className="gap-0">
+                  <DialogTitle className="text-sm">Edit issue</DialogTitle>
+                  <DialogDescription className="sr-only">
+                    Update or delete this todo issue.
+                  </DialogDescription>
+                </DialogHeader>
               </div>
             </div>
 
             <div className="flex flex-1 flex-col gap-4 px-5 py-5">
-              <input
-                className="w-full bg-transparent text-xl font-semibold text-zinc-100 outline-none placeholder:text-zinc-500"
+              <Input
+                className="h-auto border-0 bg-transparent px-0 py-0 text-xl font-semibold text-zinc-100 shadow-none placeholder:text-zinc-500 focus-visible:ring-0"
                 value={editState.title}
                 onChange={(event) =>
                   setEditState({
@@ -1187,28 +1534,49 @@ function App() {
                 autoFocus
                 disabled={isSubmitting}
               />
-              <textarea
-                className="min-h-20 w-full resize-none bg-transparent text-sm text-zinc-200 outline-none placeholder:text-zinc-600"
+              <Textarea
+                className="min-h-20 resize-none border-0 bg-transparent px-0 py-0 text-sm text-zinc-200 shadow-none placeholder:text-zinc-600 focus-visible:ring-0"
                 defaultValue=""
                 placeholder="Add description..."
                 disabled
               />
-
               <div className="flex flex-wrap items-center gap-2">
                 <Select
-                  className="h-8 w-auto rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
-                  value={editState.isCompleted ? "completed" : "pending"}
-                  onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                  value={
+                    getStatusFromDraft(
+                      editState.section,
+                      editState.isCompleted,
+                    ).value
+                  }
+                  onValueChange={(value) => {
+                    const nextStatus = findStatusByValue(value);
+
                     setEditState({
                       ...editState,
-                      isCompleted: event.target.value === "completed",
-                    })
-                  }
-                  aria-label="Issue status"
+                      section: nextStatus.section,
+                      isCompleted: nextStatus.isCompleted,
+                    });
+                  }}
                   disabled={isSubmitting}
                 >
-                  <option value="pending">In Progress</option>
-                  <option value="completed">Done</option>
+                  <SelectTrigger
+                    aria-label="Issue status"
+                    className="h-8 w-auto rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="border-zinc-800 bg-[#1a1b1d] text-zinc-100">
+                    <SelectGroup>
+                      {issueStatuses.map((status) => (
+                        <SelectItem key={status.value} value={status.value}>
+                          <span className="flex items-center gap-2">
+                            {getStatusIcon(status)}
+                            {status.label}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
                 </Select>
                 <Input
                   className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100 placeholder:text-zinc-500"
@@ -1222,66 +1590,80 @@ function App() {
                   placeholder="Section"
                   disabled={isSubmitting}
                 />
-                <Input
-                  className="h-8 w-40 rounded-full border-zinc-700 bg-zinc-800 px-3 py-1 text-xs font-semibold text-zinc-100"
-                  type="date"
+                <DatePickerField
                   value={editState.dueDate}
-                  onChange={(event) =>
+                  onChange={(value) =>
                     setEditState({
                       ...editState,
-                      dueDate: event.target.value,
+                      dueDate: value,
                     })
                   }
-                  aria-label="Issue due date"
+                  placeholder="Due date"
+                  ariaLabel="Issue due date"
                   disabled={isSubmitting}
                 />
-                <div className="relative">
-                  <UsersRound className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-400" />
-                  <Select
-                    className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 py-1 pl-8 pr-3 text-xs font-semibold text-zinc-100"
-                    value={editState.ownerId}
-                    onChange={(event: ChangeEvent<HTMLSelectElement>) =>
-                      setEditState({
-                        ...editState,
-                        ownerId: event.target.value,
-                      })
-                    }
-                    aria-label="Issue owner"
-                    disabled={isSubmitting}
-                  >
-                    <option value="">Unassigned</option>
-                    {owners.map((owner) => (
-                      <option key={owner.id} value={owner.id}>
-                        {owner.name}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <button
-                  type="button"
-                  className="inline-flex h-8 items-center gap-1 rounded-full border border-zinc-700 bg-zinc-800 px-3 text-xs font-semibold text-zinc-400"
+                <Select
+                  value={editState.ownerId || unassignedOwnerValue}
+                  onValueChange={(value) =>
+                    setEditState({
+                      ...editState,
+                      ownerId: value === unassignedOwnerValue ? "" : value,
+                    })
+                  }
+                  disabled={isSubmitting}
                 >
-                  <Tag className="size-3.5" />
-                  Labels
-                </button>
-                <button
+                  <SelectTrigger
+                    aria-label="Issue owner"
+                    className="h-8 w-36 rounded-full border-zinc-700 bg-zinc-800 py-1 pl-3 pr-3 text-xs font-semibold text-zinc-100"
+                  >
+                    <UsersRound data-icon="inline-start" className="text-zinc-400" />
+                    <SelectValue placeholder="Unassigned" />
+                  </SelectTrigger>
+                  <SelectContent className="border-zinc-800 bg-[#1a1b1d] text-zinc-100">
+                    <SelectGroup>
+                      <SelectItem value={unassignedOwnerValue}>
+                        Unassigned
+                      </SelectItem>
+                      {owners.map((owner) => (
+                        <SelectItem key={owner.id} value={owner.id}>
+                          {owner.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                <Button
                   type="button"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-zinc-400"
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full border-zinc-700 bg-zinc-800 text-xs font-semibold text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
+                >
+                  <Tag data-icon="inline-start" />
+                  Labels
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="size-8 rounded-full border-zinc-700 bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
                   aria-label="More issue options"
                 >
-                  <MoreHorizontal className="size-4" />
-                </button>
+                  <MoreHorizontal />
+                </Button>
               </div>
             </div>
 
-            <div className="flex items-center justify-between border-t border-zinc-800 px-5 py-3">
-              <button
+            <Separator className="bg-zinc-800" />
+            <DialogFooter className="flex-row items-center justify-between px-5 py-3 sm:justify-between">
+              <Button
                 type="button"
-                className="inline-flex size-8 items-center justify-center rounded-full bg-zinc-800 text-zinc-400 hover:text-zinc-100"
+                variant="ghost"
+                size="icon"
+                className="size-8 rounded-full bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-100"
                 aria-label="Attach file"
               >
-                <Paperclip className="size-4" />
-              </button>
+                <Paperclip />
+              </Button>
               <div className="flex items-center gap-3">
                 <Button
                   type="button"
@@ -1310,10 +1692,11 @@ function App() {
                   Save changes
                 </Button>
               </div>
-            </div>
+            </DialogFooter>
           </form>
-        </div>
-      ) : null}
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </main>
   );
 }
